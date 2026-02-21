@@ -617,20 +617,18 @@ def _emit_sequence_items_modern(
             text_trunc, text_meta = truncate_text(item["text"])
             with langfuse.start_as_current_span(
                 name=f"Thinking [{thinking_idx}]",
-                start_time=t,
                 metadata={"type": "thinking", "text_meta": text_meta},
             ) as span:
-                span.update(output=text_trunc)
+                span.update(start_time=t, output=text_trunc)
 
         elif item["type"] == "text":
             text_idx += 1
             text_trunc, text_meta = truncate_text(item["text"])
             with langfuse.start_as_current_span(
                 name=f"Text [{text_idx}]",
-                start_time=t,
                 metadata={"type": "text", "text_meta": text_meta},
             ) as span:
-                span.update(output=text_trunc)
+                span.update(start_time=t, output=text_trunc)
 
         elif item["type"] == "tool_use":
             in_obj = item["input"]
@@ -641,7 +639,6 @@ def _emit_sequence_items_modern(
             with langfuse.start_as_current_observation(
                 name=f"Tool: {item['name']}",
                 as_type="tool",
-                start_time=t,
                 input=in_obj,
                 metadata={
                     "tool_name": item["name"],
@@ -650,7 +647,7 @@ def _emit_sequence_items_modern(
                     "output_meta": item.get("output_meta"),
                 },
             ) as tool_obs:
-                tool_obs.update(output=item.get("output"))
+                tool_obs.update(start_time=t, output=item.get("output"))
 
 
 def _emit_modern(
@@ -672,20 +669,20 @@ def _emit_modern(
 
         with langfuse.start_as_current_span(
             name=f"Claude Code - Turn {turn_num}",
-            start_time=t0,
             input={"role": "user", "content": user_text},
             metadata=trace_meta,
         ) as trace_span:
+            trace_span.update(start_time=t0)
+
             # System prompt span
             t_cursor = t0 + step
             if system_text:
                 with langfuse.start_as_current_span(
                     name="System Prompt",
-                    start_time=t_cursor,
                     input={"role": "system"},
                     metadata={"system_text": system_text_meta},
                 ) as sys_span:
-                    sys_span.update(output={"role": "system", "content": system_text})
+                    sys_span.update(start_time=t_cursor, output={"role": "system", "content": system_text})
                 t_cursor += step
 
             # Generation observation with usage
@@ -697,12 +694,12 @@ def _emit_modern(
             with langfuse.start_as_current_observation(
                 name="Claude Response",
                 as_type="generation",
-                start_time=t_cursor,
                 model=model,
                 input={"role": "user", "content": user_text},
                 output={"role": "assistant", "content": assistant_text},
                 metadata=gen_meta,
             ) as gen_obs:
+                gen_obs.update(start_time=t_cursor)
                 if usage:
                     gen_obs.update(usage=usage)
             t_cursor += step
