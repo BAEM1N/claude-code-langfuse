@@ -15,6 +15,8 @@ Automatic [Langfuse](https://langfuse.com) tracing for [Claude Code](https://doc
 - **Stop reason** -- `end_turn`, `tool_use`, etc. tracked in metadata
 - **Session grouping** -- traces are grouped by Claude Code session ID
 - **Incremental processing** -- only new transcript entries are sent (no duplicates)
+- **Incomplete turn capture** -- if the session exits before a response, user messages are still recorded
+- **Dual hook events** -- registered on both `Stop` and `Notification` for maximum coverage
 - **Fail-open design** -- if anything goes wrong the hook exits silently; Claude Code is never blocked
 - **Cross-platform** -- works on macOS, Linux, and Windows
 - **Dual SDK support** -- works with both langfuse `>= 3.12` (nested spans) and older versions (flat traces)
@@ -78,6 +80,16 @@ Add (or merge) the following into your settings file:
 {
   "hooks": {
     "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/langfuse_hook.py"
+          }
+        ]
+      }
+    ],
+    "Notification": [
       {
         "hooks": [
           {
@@ -167,7 +179,7 @@ Set `LANGFUSE_BASE_URL` to your instance URL:
 **Flow:**
 
 1. Claude Code writes conversation data to a JSONL transcript file
-2. On every "Stop" event (after each model response), the hook is invoked
+2. On every **Stop** event (after each model response) and **Notification** event, the hook is invoked
 3. The hook reads only **new** lines from the transcript (using a file offset saved in state)
 4. New messages are grouped into user-assistant **turns**
 5. Each turn is emitted as a Langfuse **trace** with:
@@ -199,7 +211,7 @@ Set `LANGFUSE_BASE_URL` to your instance URL:
 
 ### Hook not firing
 
-1. Confirm the hook is in `~/.claude/settings.json` under `hooks.Stop`
+1. Confirm the hook is in `~/.claude/settings.json` under `hooks.Stop` and `hooks.Notification`
 2. Verify the Python path in the command is correct (`python3` vs `python`)
 3. Test manually: `echo '{}' | python3 ~/.claude/hooks/langfuse_hook.py`
 
@@ -217,7 +229,7 @@ By default, text fields are truncated at 20,000 characters. Adjust with `CC_LANG
 
 ## Uninstall
 
-1. Remove the hook entry from `~/.claude/settings.json` (delete the `Stop` hook and the `env` keys)
+1. Remove the hook entries from `~/.claude/settings.json` (delete the `Stop` hook, `Notification` hook, and the `env` keys)
 2. Delete the hook script: `rm ~/.claude/hooks/langfuse_hook.py`
 3. Optionally remove state: `rm ~/.claude/state/langfuse_state.json`
 

@@ -399,8 +399,6 @@ def build_turns(messages: List[Dict[str, Any]]) -> List[Turn]:
         nonlocal current_user, assistant_order, assistant_latest, tool_results_by_id, turns, system_for_turn
         if current_user is None:
             return
-        if not assistant_latest:
-            return
         assistants = [assistant_latest[mid] for mid in assistant_order if mid in assistant_latest]
         turns.append(Turn(
             user_msg=current_user,
@@ -503,6 +501,45 @@ def emit_turn(
     user_text_raw = extract_text(get_content(turn.user_msg))
     user_text, user_text_meta = truncate_text(user_text_raw)
 
+    user_id = os.environ.get("CC_LANGFUSE_USER_ID") or os.environ.get("LANGFUSE_USER_ID") or "claude-user"
+
+    # Incomplete turn (user message without assistant response, e.g. Ctrl+C)
+    if not turn.assistant_msgs:
+        debug(f"Incomplete turn {turn_num}: user message only (no assistant response)")
+        trace_meta: Dict[str, Any] = {
+            "source": "claude-code",
+            "session_id": session_id,
+            "turn_number": turn_num,
+            "transcript_path": str(transcript_path),
+            "cwd": ctx.cwd if ctx else None,
+            "incomplete": True,
+            "user_text": user_text_meta,
+        }
+        if _HAS_PROPAGATE:
+            with propagate_attributes(
+                session_id=session_id,
+                user_id=user_id,
+                trace_name=f"Claude Code - Turn {turn_num} (incomplete)",
+                tags=["claude-code", "incomplete"],
+            ):
+                with langfuse.start_as_current_span(
+                    name=f"Claude Code - Turn {turn_num} (incomplete)",
+                    input={"role": "user", "content": user_text},
+                    metadata=trace_meta,
+                ) as span:
+                    span.update(output={"status": "incomplete", "reason": "no assistant response"})
+        else:
+            langfuse.trace(
+                name=f"Claude Code - Turn {turn_num} (incomplete)",
+                session_id=session_id,
+                user_id=user_id,
+                input={"role": "user", "content": user_text},
+                output={"status": "incomplete", "reason": "no assistant response"},
+                metadata=trace_meta,
+                tags=["claude-code", "incomplete"],
+            )
+        return
+
     # All assistant text (concatenated from all messages)
     assistant_text_raw = extract_all_text(turn.assistant_msgs)
     assistant_text, assistant_text_meta = truncate_text(assistant_text_raw)
@@ -526,14 +563,12 @@ def emit_turn(
     usage = aggregate_usage(turn.assistant_msgs)
     stop_reason = get_stop_reason(turn.assistant_msgs[-1])
 
-    user_id = os.environ.get("CC_LANGFUSE_USER_ID") or os.environ.get("LANGFUSE_USER_ID") or "claude-user"
-
     # Count block types
     n_text = sum(1 for s in sequence if s["type"] == "text")
     n_thinking = sum(1 for s in sequence if s["type"] == "thinking")
     n_tools = sum(1 for s in sequence if s["type"] == "tool_use")
 
-    trace_meta: Dict[str, Any] = {
+    trace_meta = {
         "source": "claude-code",
         "session_id": session_id,
         "turn_number": turn_num,

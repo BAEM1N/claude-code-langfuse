@@ -15,6 +15,8 @@
 - **Stop reason** -- `end_turn`, `tool_use` 등이 메타데이터에 추적
 - **세션 그룹핑** -- Claude Code 세션 ID 기준으로 트레이스 그룹화
 - **증분 처리** -- 새로운 트랜스크립트 항목만 전송 (중복 없음)
+- **미완성 턴 캡처** -- 응답 전에 세션이 종료되어도 사용자 메시지가 기록됨
+- **이중 훅 이벤트** -- `Stop`과 `Notification` 양쪽에 등록하여 최대 커버리지 확보
 - **Fail-open 설계** -- 오류 발생 시 훅이 조용히 종료; Claude Code 작업에 영향 없음
 - **크로스 플랫폼** -- macOS, Linux, Windows 모두 지원
 - **SDK 호환** -- langfuse `>= 3.12` (중첩 스팬)과 이전 버전(플랫 트레이스) 모두 지원
@@ -78,6 +80,16 @@ chmod +x ~/.claude/hooks/langfuse_hook.py
 {
   "hooks": {
     "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/langfuse_hook.py"
+          }
+        ]
+      }
+    ],
+    "Notification": [
       {
         "hooks": [
           {
@@ -167,7 +179,7 @@ chmod +x ~/.claude/hooks/langfuse_hook.py
 **흐름:**
 
 1. Claude Code가 대화 데이터를 JSONL 트랜스크립트 파일에 기록
-2. "Stop" 이벤트마다(모델 응답 후) 훅 실행
+2. **Stop** 이벤트(모델 응답 후)와 **Notification** 이벤트마다 훅 실행
 3. 훅이 트랜스크립트에서 **새로운** 줄만 읽음 (상태 파일에 저장된 오프셋 사용)
 4. 새 메시지를 사용자-어시스턴트 **턴**으로 그룹화
 5. 각 턴을 Langfuse **트레이스**로 전송:
@@ -199,7 +211,7 @@ chmod +x ~/.claude/hooks/langfuse_hook.py
 
 ### 훅이 실행되지 않는 경우
 
-1. `~/.claude/settings.json`의 `hooks.Stop`에 훅이 있는지 확인
+1. `~/.claude/settings.json`의 `hooks.Stop`과 `hooks.Notification`에 훅이 있는지 확인
 2. 커맨드의 Python 경로가 올바른지 확인 (`python3` vs `python`)
 3. 수동 테스트: `echo '{}' | python3 ~/.claude/hooks/langfuse_hook.py`
 
@@ -217,7 +229,7 @@ chmod +x ~/.claude/hooks/langfuse_hook.py
 
 ## 제거
 
-1. `~/.claude/settings.json`에서 훅 항목 제거 (`Stop` 훅과 `env` 키 삭제)
+1. `~/.claude/settings.json`에서 훅 항목 제거 (`Stop` 훅, `Notification` 훅, `env` 키 삭제)
 2. 훅 스크립트 삭제: `rm ~/.claude/hooks/langfuse_hook.py`
 3. 선택적으로 상태 파일 제거: `rm ~/.claude/state/langfuse_state.json`
 

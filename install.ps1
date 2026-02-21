@@ -123,42 +123,44 @@ settings["env"]["LANGFUSE_SECRET_KEY"] = secret_key
 settings["env"]["LANGFUSE_BASE_URL"]   = base_url
 settings["env"]["LANGFUSE_USER_ID"]    = user_id
 
-# Merge hooks (preserve existing Stop hooks)
+# Merge hooks (preserve existing hooks)
 if "hooks" not in settings or not isinstance(settings["hooks"], dict):
     settings["hooks"] = {}
-
-stop_list = settings["hooks"].get("Stop", [])
-if not isinstance(stop_list, list):
-    stop_list = []
 
 langfuse_entry = {
     "hooks": [{"type": "command", "command": hook_command}]
 }
 
-replaced = False
-for i, entry in enumerate(stop_list):
-    if not isinstance(entry, dict):
-        continue
-    for h in entry.get("hooks", []):
-        if isinstance(h, dict) and "langfuse_hook" in h.get("command", ""):
-            stop_list[i] = langfuse_entry
-            replaced = True
+def upsert_hook(settings, event_name, langfuse_entry):
+    hook_list = settings["hooks"].get(event_name, [])
+    if not isinstance(hook_list, list):
+        hook_list = []
+    replaced = False
+    for i, entry in enumerate(hook_list):
+        if not isinstance(entry, dict):
+            continue
+        for h in entry.get("hooks", []):
+            if isinstance(h, dict) and "langfuse_hook" in h.get("command", ""):
+                hook_list[i] = langfuse_entry
+                replaced = True
+                break
+        if replaced:
             break
-    if replaced:
-        break
+    if not replaced:
+        hook_list.append(langfuse_entry)
+    settings["hooks"][event_name] = hook_list
+    return len(hook_list), replaced
 
-if not replaced:
-    stop_list.append(langfuse_entry)
-
-settings["hooks"]["Stop"] = stop_list
+n_stop, stop_replaced = upsert_hook(settings, "Stop", langfuse_entry)
+n_notif, notif_replaced = upsert_hook(settings, "Notification", langfuse_entry)
 
 with open(settings_path, "w", encoding="utf-8") as f:
     json.dump(settings, f, indent=2, ensure_ascii=False)
     f.write("\n")
 
-n_stop = len(stop_list)
 print(f"  Settings written to {settings_path}")
-print(f"  Stop hooks: {n_stop} total ({'updated' if replaced else 'added'} langfuse hook)")
+print(f"  Stop hooks: {n_stop} total ({'updated' if stop_replaced else 'added'} langfuse hook)")
+print(f"  Notification hooks: {n_notif} total ({'updated' if notif_replaced else 'added'} langfuse hook)")
 '@
 
 & $Python -c $MergeScript $SettingsFile $HookCmd $LfPublicKey $LfSecretKey $LfBaseUrl $LfUserId
