@@ -529,15 +529,18 @@ def emit_turn(
                 ) as span:
                     span.update(output={"status": "incomplete", "reason": "no assistant response"})
         else:
-            langfuse.trace(
+            with langfuse.start_as_current_span(
                 name=f"Claude Code - Turn {turn_num} (incomplete)",
-                session_id=session_id,
-                user_id=user_id,
                 input={"role": "user", "content": user_text},
-                output={"status": "incomplete", "reason": "no assistant response"},
                 metadata=trace_meta,
-                tags=["claude-code", "incomplete"],
-            )
+            ) as span:
+                langfuse.update_current_trace(
+                    name=f"Claude Code - Turn {turn_num} (incomplete)",
+                    session_id=session_id,
+                    user_id=user_id,
+                    tags=["claude-code", "incomplete"],
+                )
+                span.update(output={"status": "incomplete", "reason": "no assistant response"})
         return
 
     # All assistant text (concatenated from all messages)
@@ -720,80 +723,111 @@ def _emit_legacy(
     system_text, system_text_meta,
     sequence, trace_meta,
 ):
-    """langfuse < 3.12: flat trace + generation (no propagate_attributes)."""
-    trace = langfuse.trace(
-        name=f"Claude Code - Turn {turn_num}",
-        session_id=session_id,
-        user_id=user_id,
-        input={"role": "user", "content": user_text},
-        output={"role": "assistant", "content": assistant_text},
-        metadata=trace_meta,
-        tags=["claude-code"],
-    )
+    """langfuse >= 3.x without propagate_attributes (e.g. 3.7+, Python < 3.10)."""
+    step = timedelta(milliseconds=1)
+    t0 = datetime.now(timezone.utc)
 
-    # System prompt span
-    if system_text:
-        trace.span(
-            name="System Prompt",
-            input={"role": "system"},
-            output={"role": "system", "content": system_text},
-            metadata={"system_text": system_text_meta},
+    with langfuse.start_as_current_span(
+        name=f"Claude Code - Turn {turn_num}",
+        input={"role": "user", "content": user_text},
+        metadata=trace_meta,
+    ) as trace_span:
+        trace_span.update(start_time=t0)
+
+        # Set trace-level attributes (session, user, tags)
+        langfuse.update_current_trace(
+            name=f"Claude Code - Turn {turn_num}",
+            session_id=session_id,
+            user_id=user_id,
+            tags=["claude-code"],
+            input={"role": "user", "content": user_text},
+            output={"role": "assistant", "content": assistant_text},
+            metadata=trace_meta,
         )
 
-    # Generation with usage
-    gen_kwargs: Dict[str, Any] = {
-        "name": "Claude Response",
-        "model": model,
-        "input": {"role": "user", "content": user_text},
-        "output": {"role": "assistant", "content": assistant_text},
-        "metadata": {
+        # System prompt span
+        t_cursor = t0 + step
+        if system_text:
+            time.sleep(0.002)
+            with langfuse.start_as_current_span(
+                name="System Prompt",
+                input={"role": "system"},
+                metadata={"system_text": system_text_meta},
+            ) as sys_span:
+                sys_span.update(start_time=t_cursor, output={"role": "system", "content": system_text})
+            t_cursor += step
+
+        # Generation observation with usage
+        gen_meta: Dict[str, Any] = {
             "assistant_text": assistant_text_meta,
             "stop_reason": stop_reason,
             "content_blocks": len(sequence),
-        },
-    }
-    if usage:
-        gen_kwargs["usage"] = usage
+        }
+        time.sleep(0.002)
+        with langfuse.start_as_current_observation(
+            name="Claude Response",
+            as_type="generation",
+            model=model,
+            input={"role": "user", "content": user_text},
+            output={"role": "assistant", "content": assistant_text},
+            metadata=gen_meta,
+        ) as gen_obs:
+            gen_obs.update(start_time=t_cursor)
+            if usage:
+                gen_obs.update(usage_details=usage)
+        t_cursor += step
 
-    trace.generation(**gen_kwargs)
+        # Interleaved content sequence
+        _emit_sequence_items_legacy(langfuse, sequence, t_cursor, step)
 
-    # Interleaved content sequence
+        trace_span.update(output={"role": "assistant", "content": assistant_text})
+
+
+def _emit_sequence_items_legacy(
+    langfuse, sequence: List[Dict[str, Any]], base_time: datetime, step: timedelta,
+) -> None:
+    """Emit interleaved content blocks as nested spans (3.7+ SDK without propagate)."""
     text_idx = 0
     thinking_idx = 0
-    for item in sequence:
+    for i, item in enumerate(sequence):
+        t = base_time + step * i
+        time.sleep(0.002)
         if item["type"] == "thinking":
             thinking_idx += 1
             text_trunc, text_meta = truncate_text(item["text"])
-            trace.span(
+            with langfuse.start_as_current_span(
                 name=f"Thinking [{thinking_idx}]",
-                output=text_trunc,
                 metadata={"type": "thinking", "text_meta": text_meta},
-            )
+            ) as span:
+                span.update(start_time=t, output=text_trunc)
+
         elif item["type"] == "text":
             text_idx += 1
             text_trunc, text_meta = truncate_text(item["text"])
-            trace.span(
+            with langfuse.start_as_current_span(
                 name=f"Text [{text_idx}]",
-                output=text_trunc,
                 metadata={"type": "text", "text_meta": text_meta},
-            )
+            ) as span:
+                span.update(start_time=t, output=text_trunc)
+
         elif item["type"] == "tool_use":
             in_obj = item["input"]
             in_meta = None
             if isinstance(in_obj, str):
                 in_obj, in_meta = truncate_text(in_obj)
 
-            trace.span(
+            with langfuse.start_as_current_observation(
                 name=f"Tool: {item['name']}",
+                as_type="tool",
                 input=in_obj,
-                output=item.get("output"),
                 metadata={
                     "tool_name": item["name"],
                     "tool_id": item["id"],
                     "input_meta": in_meta,
                     "output_meta": item.get("output_meta"),
                 },
-            )
+            ) as tool_obs:
+                tool_obs.update(start_time=t, output=item.get("output"))
 
 # ----------------- Main -----------------
 def main() -> int:
