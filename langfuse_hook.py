@@ -26,7 +26,7 @@ import sys
 import time
 import hashlib
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -569,16 +569,20 @@ def emit_turn(
         )
 
 
-def _emit_sequence_items_modern(langfuse, sequence: List[Dict[str, Any]]) -> None:
+def _emit_sequence_items_modern(
+    langfuse, sequence: List[Dict[str, Any]], base_time: datetime, step: timedelta,
+) -> None:
     """Emit interleaved content blocks as nested spans (modern SDK)."""
     text_idx = 0
     thinking_idx = 0
-    for item in sequence:
+    for i, item in enumerate(sequence):
+        t = base_time + step * i
         if item["type"] == "thinking":
             thinking_idx += 1
             text_trunc, text_meta = truncate_text(item["text"])
             with langfuse.start_as_current_span(
                 name=f"Thinking [{thinking_idx}]",
+                start_time=t,
                 metadata={"type": "thinking", "text_meta": text_meta},
             ) as span:
                 span.update(output=text_trunc)
@@ -588,6 +592,7 @@ def _emit_sequence_items_modern(langfuse, sequence: List[Dict[str, Any]]) -> Non
             text_trunc, text_meta = truncate_text(item["text"])
             with langfuse.start_as_current_span(
                 name=f"Text [{text_idx}]",
+                start_time=t,
                 metadata={"type": "text", "text_meta": text_meta},
             ) as span:
                 span.update(output=text_trunc)
@@ -601,6 +606,7 @@ def _emit_sequence_items_modern(langfuse, sequence: List[Dict[str, Any]]) -> Non
             with langfuse.start_as_current_observation(
                 name=f"Tool: {item['name']}",
                 as_type="tool",
+                start_time=t,
                 input=in_obj,
                 metadata={
                     "tool_name": item["name"],
@@ -626,19 +632,26 @@ def _emit_modern(
         trace_name=f"Claude Code - Turn {turn_num}",
         tags=["claude-code"],
     ):
+        step = timedelta(milliseconds=1)
+        t0 = datetime.now(timezone.utc)
+
         with langfuse.start_as_current_span(
             name=f"Claude Code - Turn {turn_num}",
+            start_time=t0,
             input={"role": "user", "content": user_text},
             metadata=trace_meta,
         ) as trace_span:
             # System prompt span
+            t_cursor = t0 + step
             if system_text:
                 with langfuse.start_as_current_span(
                     name="System Prompt",
+                    start_time=t_cursor,
                     input={"role": "system"},
                     metadata={"system_text": system_text_meta},
                 ) as sys_span:
                     sys_span.update(output={"role": "system", "content": system_text})
+                t_cursor += step
 
             # Generation observation with usage
             gen_meta: Dict[str, Any] = {
@@ -649,6 +662,7 @@ def _emit_modern(
             with langfuse.start_as_current_observation(
                 name="Claude Response",
                 as_type="generation",
+                start_time=t_cursor,
                 model=model,
                 input={"role": "user", "content": user_text},
                 output={"role": "assistant", "content": assistant_text},
@@ -656,9 +670,10 @@ def _emit_modern(
             ) as gen_obs:
                 if usage:
                     gen_obs.update(usage=usage)
+            t_cursor += step
 
             # Interleaved content sequence (text, thinking, tool spans in order)
-            _emit_sequence_items_modern(langfuse, sequence)
+            _emit_sequence_items_modern(langfuse, sequence, t_cursor, step)
 
             trace_span.update(output={"role": "assistant", "content": assistant_text})
 
