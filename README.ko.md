@@ -1,0 +1,200 @@
+# claude-code-langfuse
+
+[English](README.md) | [한국어](README.ko.md)
+
+[Claude Code](https://docs.anthropic.com/en/docs/claude-code)를 위한 자동 [Langfuse](https://langfuse.com) 트레이싱. 대화 턴, 도구 호출, 모델 응답이 Langfuse 대시보드에 구조화된 트레이스로 자동 기록됩니다. 코드 변경 없이 사용할 수 있습니다.
+
+## 주요 기능
+
+- **턴 단위 트레이싱** -- 사용자 프롬프트 + 어시스턴트 응답이 하나의 Langfuse 트레이스로 기록
+- **도구 호출 추적** -- 모든 도구 사용(Read, Write, Bash 등)의 입출력 캡처
+- **세션 그룹핑** -- Claude Code 세션 ID 기준으로 트레이스 그룹화
+- **증분 처리** -- 새로운 트랜스크립트 항목만 전송 (중복 없음)
+- **Fail-open 설계** -- 오류 발생 시 훅이 조용히 종료; Claude Code 작업에 영향 없음
+- **크로스 플랫폼** -- macOS, Linux, Windows 모두 지원
+- **SDK 호환** -- langfuse `>= 3.12` (중첩 스팬)과 이전 버전(플랫 트레이스) 모두 지원
+
+## 빠른 시작
+
+```bash
+# 클론 후 설치 스크립트 실행
+git clone https://github.com/baem1n/claude-code-langfuse.git
+cd claude-code-langfuse
+bash install.sh
+```
+
+Windows (PowerShell):
+
+```powershell
+git clone https://github.com/baem1n/claude-code-langfuse.git
+cd claude-code-langfuse
+.\install.ps1
+```
+
+설치 스크립트가 수행하는 작업:
+1. `langfuse` Python 패키지 설치
+2. 훅 스크립트를 `~/.claude/hooks/`에 복사
+3. Langfuse API 키 입력 프롬프트
+4. `~/.claude/settings.json`에 훅 설정 자동 병합
+
+## 수동 설치
+
+### 1. langfuse SDK 설치
+
+```bash
+pip install langfuse
+```
+
+### 2. 훅 스크립트 복사
+
+```bash
+mkdir -p ~/.claude/hooks
+cp langfuse_hook.py ~/.claude/hooks/
+chmod +x ~/.claude/hooks/langfuse_hook.py
+```
+
+### 3. `~/.claude/settings.json` 설정
+
+설정 파일에 다음을 추가(또는 병합)하세요:
+
+```json
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/langfuse_hook.py"
+          }
+        ]
+      }
+    ]
+  },
+  "env": {
+    "TRACE_TO_LANGFUSE": "true",
+    "LANGFUSE_PUBLIC_KEY": "pk-lf-...",
+    "LANGFUSE_SECRET_KEY": "sk-lf-...",
+    "LANGFUSE_BASE_URL": "https://cloud.langfuse.com",
+    "LANGFUSE_USER_ID": "your-username"
+  }
+}
+```
+
+## 설정
+
+### 환경변수
+
+| 변수 | 필수 | 기본값 | 설명 |
+|------|------|--------|------|
+| `TRACE_TO_LANGFUSE` | 예 | - | `"true"`로 설정하여 트레이싱 활성화 |
+| `LANGFUSE_PUBLIC_KEY` | 예 | - | Langfuse 퍼블릭 키 (`CC_LANGFUSE_PUBLIC_KEY`도 가능) |
+| `LANGFUSE_SECRET_KEY` | 예 | - | Langfuse 시크릿 키 (`CC_LANGFUSE_SECRET_KEY`도 가능) |
+| `LANGFUSE_BASE_URL` | 아니오 | `https://cloud.langfuse.com` | Langfuse 호스트 URL (`CC_LANGFUSE_BASE_URL`도 가능) |
+| `LANGFUSE_USER_ID` | 아니오 | `claude-user` | 트레이스 귀속 사용자 ID (`CC_LANGFUSE_USER_ID`도 가능) |
+| `CC_LANGFUSE_DEBUG` | 아니오 | `false` | `"true"`로 설정하면 상세 로깅 활성화 |
+| `CC_LANGFUSE_MAX_CHARS` | 아니오 | `20000` | 텍스트 필드당 최대 문자 수 (초과 시 잘림) |
+
+모든 `LANGFUSE_*` 변수는 `CC_LANGFUSE_*` 접두사도 지원합니다 (접두사 버전이 우선).
+
+### 셀프 호스팅 Langfuse
+
+`LANGFUSE_BASE_URL`에 자체 인스턴스 URL을 설정하세요:
+
+```json
+"LANGFUSE_BASE_URL": "https://langfuse.your-company.com"
+```
+
+## 작동 원리
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                    Claude Code                          │
+│                                                         │
+│  사용자 프롬프트 ──► 모델 응답 ──► 도구 호출 ──► ...     │
+│       │                                                 │
+│       ▼                                                 │
+│  트랜스크립트 파일 (.jsonl)                               │
+│       │                                                 │
+│       │  ┌──── Stop 훅 ─────┐                           │
+│       └─►│ langfuse_hook.py │                           │
+│          │                   │                           │
+│          │ 1. 새 JSONL 읽기  │                           │
+│          │ 2. 턴 구성        │                           │
+│          │ 3. 트레이스 전송  │                           │
+│          └───────┬───────────┘                           │
+│                  │                                       │
+└──────────────────┼───────────────────────────────────────┘
+                   │
+                   ▼
+          ┌────────────────┐
+          │    Langfuse     │
+          │                 │
+          │  Trace (Turn 1) │
+          │  ├─ Generation  │
+          │  ├─ Tool: Read  │
+          │  └─ Tool: Write │
+          │                 │
+          │  Trace (Turn 2) │
+          │  └─ Generation  │
+          │                 │
+          │  Session: abc123│
+          └────────────────┘
+```
+
+**흐름:**
+
+1. Claude Code가 대화 데이터를 JSONL 트랜스크립트 파일에 기록
+2. "Stop" 이벤트마다(모델 응답 후) 훅 실행
+3. 훅이 트랜스크립트에서 **새로운** 줄만 읽음 (상태 파일에 저장된 오프셋 사용)
+4. 새 메시지를 사용자-어시스턴트 **턴**으로 그룹화
+5. 각 턴을 Langfuse **트레이스**로 전송:
+   - 모델 응답을 위한 **generation** 관찰
+   - 각 도구 호출에 대한 **tool** 스팬 (입출력 포함)
+6. 동일 `session_id`로 모든 트레이스 그룹화
+
+## 호환성
+
+| 구성 요소 | 버전 |
+|-----------|------|
+| Python | 3.8+ |
+| langfuse SDK | 2.0+ (플랫 트레이스), 3.12+ (중첩 스팬) |
+| Claude Code | hooks 지원하는 모든 버전 |
+| OS | macOS, Linux, Windows |
+
+## 문제 해결
+
+### 트레이스가 나타나지 않는 경우
+
+1. 설정에서 `TRACE_TO_LANGFUSE`가 `"true"`인지 확인
+2. API 키가 올바른지 확인
+3. 디버그 로깅 활성화: `CC_LANGFUSE_DEBUG`를 `"true"`로 설정
+4. 로그 파일 확인: `~/.claude/state/langfuse_hook.log`
+
+### 훅이 실행되지 않는 경우
+
+1. `~/.claude/settings.json`의 `hooks.Stop`에 훅이 있는지 확인
+2. 커맨드의 Python 경로가 올바른지 확인 (`python3` vs `python`)
+3. 수동 테스트: `echo '{}' | python3 ~/.claude/hooks/langfuse_hook.py`
+
+### 중복 트레이스
+
+훅이 `~/.claude/state/langfuse_state.json`에 파일 오프셋을 추적합니다. 이 파일을 삭제하면 이전에 전송된 턴이 다시 전송됩니다. 새로 시작하려는 경우에만 상태 파일을 삭제하세요.
+
+### 긴 텍스트 잘림
+
+기본적으로 텍스트 필드는 20,000자에서 잘립니다. `CC_LANGFUSE_MAX_CHARS`로 조정:
+
+```json
+"CC_LANGFUSE_MAX_CHARS": "50000"
+```
+
+## 제거
+
+1. `~/.claude/settings.json`에서 훅 항목 제거 (`Stop` 훅과 `env` 키 삭제)
+2. 훅 스크립트 삭제: `rm ~/.claude/hooks/langfuse_hook.py`
+3. 선택적으로 상태 파일 제거: `rm ~/.claude/state/langfuse_state.json`
+
+## 라이선스
+
+[MIT](LICENSE)

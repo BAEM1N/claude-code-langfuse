@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.env
+.env.*
+*.log
+.DS_Store
+Thumbs.db
+
+# State files (generated at runtime)
+langfuse_state.json
+langfuse_state.json.tmp
+langfuse_state.lock
