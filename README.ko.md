@@ -23,7 +23,7 @@
 
 ```bash
 # 클론 후 설치 스크립트 실행
-git clone https://github.com/baem1n/claude-code-langfuse.git
+git clone https://github.com/BAEM1N/claude-code-langfuse.git
 cd claude-code-langfuse
 bash install.sh
 ```
@@ -31,16 +31,22 @@ bash install.sh
 Windows (PowerShell):
 
 ```powershell
-git clone https://github.com/baem1n/claude-code-langfuse.git
+git clone https://github.com/BAEM1N/claude-code-langfuse.git
 cd claude-code-langfuse
 .\install.ps1
 ```
 
 설치 스크립트가 수행하는 작업:
-1. `langfuse` Python 패키지 설치
-2. 훅 스크립트를 `~/.claude/hooks/`에 복사
-3. Langfuse API 키 입력 프롬프트
-4. `~/.claude/settings.json`에 훅 설정 자동 병합
+1. Python 3.8+ 설치 확인
+2. `langfuse` Python 패키지 설치
+3. 훅 스크립트를 `~/.claude/hooks/`에 복사
+4. Langfuse 인증 정보 입력 프롬프트:
+   - Public Key (`pk-lf-...`)
+   - Secret Key (`sk-lf-...`, 마스킹 입력)
+   - Base URL (기본값: `https://cloud.langfuse.com`)
+   - User ID (기본값: `claude-user`)
+5. `~/.claude/settings.json`에 훅 + 환경변수 병합 (기존 설정 보존)
+6. 설치 검증
 
 ## 수동 설치
 

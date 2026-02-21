@@ -8,6 +8,7 @@ set -euo pipefail
 HOOK_NAME="langfuse_hook.py"
 CLAUDE_DIR="$HOME/.claude"
 HOOKS_DIR="$CLAUDE_DIR/hooks"
+STATE_DIR="$CLAUDE_DIR/state"
 SETTINGS_FILE="$CLAUDE_DIR/settings.json"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
@@ -42,6 +43,14 @@ else
 fi
 
 PY_VERSION=$($PYTHON -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
+PY_MAJOR=$($PYTHON -c 'import sys; print(sys.version_info.major)')
+PY_MINOR=$($PYTHON -c 'import sys; print(sys.version_info.minor)')
+
+if [[ "$PY_MAJOR" -lt 3 ]] || { [[ "$PY_MAJOR" -eq 3 ]] && [[ "$PY_MINOR" -lt 8 ]]; }; then
+    error "Python 3.8+ required, found $PY_VERSION"
+    exit 1
+fi
+
 info "Found $PYTHON ($PY_VERSION)"
 
 # ── 2. Install langfuse SDK ──────────────────
@@ -54,20 +63,31 @@ step "Copying hook script..."
 mkdir -p "$HOOKS_DIR"
 cp "$SCRIPT_DIR/$HOOK_NAME" "$HOOKS_DIR/$HOOK_NAME"
 chmod +x "$HOOKS_DIR/$HOOK_NAME"
-info "Hook script copied to $HOOKS_DIR/$HOOK_NAME"
+info "Hook script installed: $HOOKS_DIR/$HOOK_NAME"
 
-# ── 4. Collect Langfuse credentials ─────────
+# ── 4. Clean previous state (optional) ──────
+if [[ -f "$STATE_DIR/langfuse_state.json" ]]; then
+    echo ""
+    read -rp "  Previous state file found. Reset trace offsets? [y/N]: " RESET_STATE
+    if [[ "${RESET_STATE,,}" == "y" ]]; then
+        rm -f "$STATE_DIR/langfuse_state.json"
+        info "State file reset."
+    fi
+fi
+
+# ── 5. Collect Langfuse credentials ─────────
 echo ""
 step "Configuring Langfuse credentials..."
 echo "  Get your keys from https://cloud.langfuse.com (or your self-hosted instance)."
 echo ""
 
-read -rp "  Langfuse Public Key : " LF_PUBLIC_KEY
-read -rp "  Langfuse Secret Key : " LF_SECRET_KEY
-read -rp "  Langfuse Base URL   [https://cloud.langfuse.com]: " LF_BASE_URL
+read -rp "  Langfuse Public Key  : " LF_PUBLIC_KEY
+read -rsp "  Langfuse Secret Key  : " LF_SECRET_KEY
+echo ""
+read -rp "  Langfuse Base URL    [https://cloud.langfuse.com]: " LF_BASE_URL
 LF_BASE_URL="${LF_BASE_URL:-https://cloud.langfuse.com}"
 
-read -rp "  User ID (for trace attribution) [claude-user]: " LF_USER_ID
+read -rp "  User ID (trace attribution) [claude-user]: " LF_USER_ID
 LF_USER_ID="${LF_USER_ID:-claude-user}"
 
 if [[ -z "$LF_PUBLIC_KEY" || -z "$LF_SECRET_KEY" ]]; then
@@ -75,42 +95,22 @@ if [[ -z "$LF_PUBLIC_KEY" || -z "$LF_SECRET_KEY" ]]; then
     exit 1
 fi
 
-# ── 5. Merge into settings.json ─────────────
+# ── 6. Merge into settings.json ─────────────
 step "Updating $SETTINGS_FILE..."
 mkdir -p "$CLAUDE_DIR"
 
-# Build the hook + env patch as JSON
-PATCH=$(cat <<ENDJSON
-{
-  "hooks": {
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "$PYTHON ~/.claude/hooks/langfuse_hook.py"
-          }
-        ]
-      }
-    ]
-  },
-  "env": {
-    "TRACE_TO_LANGFUSE": "true",
-    "LANGFUSE_PUBLIC_KEY": "$LF_PUBLIC_KEY",
-    "LANGFUSE_SECRET_KEY": "$LF_SECRET_KEY",
-    "LANGFUSE_BASE_URL": "$LF_BASE_URL",
-    "LANGFUSE_USER_ID": "$LF_USER_ID"
-  }
-}
-ENDJSON
-)
+HOOK_CMD="$PYTHON ~/.claude/hooks/langfuse_hook.py"
 
-# Merge using Python (works everywhere, no jq dependency)
-$PYTHON - "$SETTINGS_FILE" "$PATCH" <<'PYEOF'
+# Smart merge: preserves existing hooks/env, only adds/updates langfuse entries
+$PYTHON - "$SETTINGS_FILE" "$HOOK_CMD" "$LF_PUBLIC_KEY" "$LF_SECRET_KEY" "$LF_BASE_URL" "$LF_USER_ID" <<'PYEOF'
 import json, sys, os
 
 settings_path = sys.argv[1]
-patch = json.loads(sys.argv[2])
+hook_command  = sys.argv[2]
+public_key    = sys.argv[3]
+secret_key    = sys.argv[4]
+base_url      = sys.argv[5]
+user_id       = sys.argv[6]
 
 # Load existing settings
 if os.path.exists(settings_path):
@@ -119,19 +119,68 @@ if os.path.exists(settings_path):
 else:
     settings = {}
 
-# Deep merge: patch overwrites at the hook/env level
-for key in patch:
-    if key in settings and isinstance(settings[key], dict) and isinstance(patch[key], dict):
-        settings[key].update(patch[key])
-    else:
-        settings[key] = patch[key]
+# ── Merge env (preserve existing keys) ──
+if "env" not in settings or not isinstance(settings["env"], dict):
+    settings["env"] = {}
+settings["env"]["TRACE_TO_LANGFUSE"]  = "true"
+settings["env"]["LANGFUSE_PUBLIC_KEY"] = public_key
+settings["env"]["LANGFUSE_SECRET_KEY"] = secret_key
+settings["env"]["LANGFUSE_BASE_URL"]   = base_url
+settings["env"]["LANGFUSE_USER_ID"]    = user_id
 
+# ── Merge hooks (preserve existing Stop hooks) ──
+if "hooks" not in settings or not isinstance(settings["hooks"], dict):
+    settings["hooks"] = {}
+
+stop_list = settings["hooks"].get("Stop", [])
+if not isinstance(stop_list, list):
+    stop_list = []
+
+langfuse_entry = {
+    "hooks": [{"type": "command", "command": hook_command}]
+}
+
+# Find and replace existing langfuse hook, or append
+replaced = False
+for i, entry in enumerate(stop_list):
+    if not isinstance(entry, dict):
+        continue
+    for h in entry.get("hooks", []):
+        if isinstance(h, dict) and "langfuse_hook" in h.get("command", ""):
+            stop_list[i] = langfuse_entry
+            replaced = True
+            break
+    if replaced:
+        break
+
+if not replaced:
+    stop_list.append(langfuse_entry)
+
+settings["hooks"]["Stop"] = stop_list
+
+# Write
 with open(settings_path, "w", encoding="utf-8") as f:
     json.dump(settings, f, indent=2, ensure_ascii=False)
     f.write("\n")
 
+n_stop = len(stop_list)
 print(f"  Settings written to {settings_path}")
+print(f"  Stop hooks: {n_stop} total ({('updated' if replaced else 'added')} langfuse hook)")
 PYEOF
+
+# ── 7. Verify ────────────────────────────────
+step "Verifying installation..."
+if $PYTHON -c "import langfuse" 2>/dev/null; then
+    info "langfuse SDK: OK"
+else
+    warn "langfuse SDK import failed. Check your Python environment."
+fi
+
+if [[ -f "$HOOKS_DIR/$HOOK_NAME" ]]; then
+    info "Hook script: OK"
+else
+    warn "Hook script not found at $HOOKS_DIR/$HOOK_NAME"
+fi
 
 # ── Done ─────────────────────────────────────
 echo ""
@@ -140,9 +189,10 @@ echo "║  Installation complete!                  ║"
 echo "╚══════════════════════════════════════════╝"
 echo ""
 info "Claude Code will now send traces to Langfuse on every Stop event."
-info "Open your Langfuse dashboard to see traces appear."
+info "Start (or restart) Claude Code to activate the hook."
 echo ""
-info "To disable, set TRACE_TO_LANGFUSE=false in $SETTINGS_FILE"
-info "Logs: ~/.claude/state/langfuse_hook.log"
-info "Debug: set CC_LANGFUSE_DEBUG=true in env section"
+echo "  Dashboard : ${LF_BASE_URL}"
+echo "  Logs      : ~/.claude/state/langfuse_hook.log"
+echo "  Debug     : set CC_LANGFUSE_DEBUG=true in settings.json env"
+echo "  Disable   : set TRACE_TO_LANGFUSE=false in settings.json env"
 echo ""

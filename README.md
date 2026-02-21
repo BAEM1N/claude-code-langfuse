@@ -23,7 +23,7 @@ Automatic [Langfuse](https://langfuse.com) tracing for [Claude Code](https://doc
 
 ```bash
 # Clone and run the installer
-git clone https://github.com/baem1n/claude-code-langfuse.git
+git clone https://github.com/BAEM1N/claude-code-langfuse.git
 cd claude-code-langfuse
 bash install.sh
 ```
@@ -31,16 +31,22 @@ bash install.sh
 On Windows (PowerShell):
 
 ```powershell
-git clone https://github.com/baem1n/claude-code-langfuse.git
+git clone https://github.com/BAEM1N/claude-code-langfuse.git
 cd claude-code-langfuse
 .\install.ps1
 ```
 
 The installer will:
-1. Install the `langfuse` Python package
-2. Copy the hook script to `~/.claude/hooks/`
-3. Prompt you for your Langfuse API keys
-4. Merge the hook configuration into `~/.claude/settings.json`
+1. Check Python 3.8+ is available
+2. Install the `langfuse` Python package
+3. Copy the hook script to `~/.claude/hooks/`
+4. Prompt you for your Langfuse credentials:
+   - Public Key (`pk-lf-...`)
+   - Secret Key (`sk-lf-...`, masked input)
+   - Base URL (defaults to `https://cloud.langfuse.com`)
+   - User ID (defaults to `claude-user`)
+5. Merge the hook + env into `~/.claude/settings.json` (preserves your existing settings)
+6. Verify the installation
 
 ## Manual Setup
 
