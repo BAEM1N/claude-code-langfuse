@@ -646,19 +646,16 @@ def _emit_modern(
                 "stop_reason": stop_reason,
                 "content_blocks": len(sequence),
             }
-            gen_kwargs: Dict[str, Any] = {
-                "name": "Claude Response",
-                "as_type": "generation",
-                "model": model,
-                "input": {"role": "user", "content": user_text},
-                "output": {"role": "assistant", "content": assistant_text},
-                "metadata": gen_meta,
-            }
-            if usage:
-                gen_kwargs["usage"] = usage
-
-            with langfuse.start_as_current_observation(**gen_kwargs):
-                pass
+            with langfuse.start_as_current_observation(
+                name="Claude Response",
+                as_type="generation",
+                model=model,
+                input={"role": "user", "content": user_text},
+                output={"role": "assistant", "content": assistant_text},
+                metadata=gen_meta,
+            ) as gen_obs:
+                if usage:
+                    gen_obs.update(usage=usage)
 
             # Interleaved content sequence (text, thinking, tool spans in order)
             _emit_sequence_items_modern(langfuse, sequence)
