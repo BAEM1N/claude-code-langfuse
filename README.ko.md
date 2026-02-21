@@ -7,7 +7,12 @@
 ## 주요 기능
 
 - **턴 단위 트레이싱** -- 사용자 프롬프트 + 어시스턴트 응답이 하나의 Langfuse 트레이스로 기록
+- **시스템 프롬프트 캡처** -- 시스템 메시지가 별도 스팬으로 기록
+- **전체 어시스턴트 콘텐츠** -- 도구 호출 사이의 모든 텍스트 블록이 순서대로 보존 (누락 없음)
+- **Thinking 블록** -- Claude의 내부 추론(`thinking`)이 별도 스팬으로 캡처
 - **도구 호출 추적** -- 모든 도구 사용(Read, Write, Bash 등)의 입출력 캡처
+- **토큰 사용량** -- 입출력/캐시 토큰 수가 generation에 기록
+- **Stop reason** -- `end_turn`, `tool_use` 등이 메타데이터에 추적
 - **세션 그룹핑** -- Claude Code 세션 ID 기준으로 트레이스 그룹화
 - **증분 처리** -- 새로운 트랜스크립트 항목만 전송 (중복 없음)
 - **Fail-open 설계** -- 오류 발생 시 훅이 조용히 종료; Claude Code 작업에 영향 없음
@@ -127,19 +132,24 @@ chmod +x ~/.claude/hooks/langfuse_hook.py
 └──────────────────┼───────────────────────────────────────┘
                    │
                    ▼
-          ┌────────────────┐
-          │    Langfuse     │
-          │                 │
-          │  Trace (Turn 1) │
-          │  ├─ Generation  │
-          │  ├─ Tool: Read  │
-          │  └─ Tool: Write │
-          │                 │
-          │  Trace (Turn 2) │
-          │  └─ Generation  │
-          │                 │
-          │  Session: abc123│
-          └────────────────┘
+          ┌─────────────────────┐
+          │      Langfuse        │
+          │                      │
+          │  Trace (Turn 1)      │
+          │  ├─ System Prompt    │
+          │  ├─ Generation       │
+          │  │   ├─ model        │
+          │  │   ├─ usage tokens │
+          │  │   └─ stop_reason  │
+          │  ├─ Thinking [1]     │
+          │  ├─ Text [1]         │
+          │  ├─ Tool: Read       │
+          │  ├─ Text [2]         │
+          │  ├─ Tool: Write      │
+          │  └─ Text [3]         │
+          │                      │
+          │  Session: abc123     │
+          └─────────────────────┘
 ```
 
 **흐름:**
@@ -149,8 +159,12 @@ chmod +x ~/.claude/hooks/langfuse_hook.py
 3. 훅이 트랜스크립트에서 **새로운** 줄만 읽음 (상태 파일에 저장된 오프셋 사용)
 4. 새 메시지를 사용자-어시스턴트 **턴**으로 그룹화
 5. 각 턴을 Langfuse **트레이스**로 전송:
-   - 모델 응답을 위한 **generation** 관찰
-   - 각 도구 호출에 대한 **tool** 스팬 (입출력 포함)
+   - **시스템 프롬프트** 스팬 (존재 시)
+   - **generation** 관찰 (모델명, 토큰 사용량, stop reason 포함)
+   - 어시스턴트 전체 흐름을 순서대로 보존하는 콘텐츠 스팬:
+     - **Thinking** 스팬: 내부 추론 블록
+     - **Text** 스팬: 도구 호출 사이의 어시스턴트 텍스트
+     - **Tool** 스팬: 각 도구 호출 (입출력 포함)
 6. 동일 `session_id`로 모든 트레이스 그룹화
 
 ## 호환성

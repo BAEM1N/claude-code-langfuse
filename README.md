@@ -7,7 +7,12 @@ Automatic [Langfuse](https://langfuse.com) tracing for [Claude Code](https://doc
 ## Features
 
 - **Per-turn tracing** -- each user prompt + assistant response becomes a Langfuse trace
+- **System prompt capture** -- system messages are recorded as dedicated spans
+- **Full assistant content** -- all text blocks between tool calls are preserved in order (no content lost)
+- **Thinking blocks** -- Claude's internal reasoning (`thinking`) is captured as separate spans
 - **Tool call tracking** -- every tool use (Read, Write, Bash, etc.) is captured with inputs and outputs
+- **Token usage** -- input/output/cache token counts are recorded on each generation
+- **Stop reason** -- `end_turn`, `tool_use`, etc. tracked in metadata
 - **Session grouping** -- traces are grouped by Claude Code session ID
 - **Incremental processing** -- only new transcript entries are sent (no duplicates)
 - **Fail-open design** -- if anything goes wrong the hook exits silently; Claude Code is never blocked
@@ -127,19 +132,24 @@ Set `LANGFUSE_BASE_URL` to your instance URL:
 └──────────────────┼───────────────────────────────────────┘
                    │
                    ▼
-          ┌────────────────┐
-          │    Langfuse     │
-          │                 │
-          │  Trace (Turn 1) │
-          │  ├─ Generation  │
-          │  ├─ Tool: Read  │
-          │  └─ Tool: Write │
-          │                 │
-          │  Trace (Turn 2) │
-          │  └─ Generation  │
-          │                 │
-          │  Session: abc123│
-          └────────────────┘
+          ┌─────────────────────┐
+          │      Langfuse        │
+          │                      │
+          │  Trace (Turn 1)      │
+          │  ├─ System Prompt    │
+          │  ├─ Generation       │
+          │  │   ├─ model        │
+          │  │   ├─ usage tokens │
+          │  │   └─ stop_reason  │
+          │  ├─ Thinking [1]     │
+          │  ├─ Text [1]         │
+          │  ├─ Tool: Read       │
+          │  ├─ Text [2]         │
+          │  ├─ Tool: Write      │
+          │  └─ Text [3]         │
+          │                      │
+          │  Session: abc123     │
+          └─────────────────────┘
 ```
 
 **Flow:**
@@ -149,8 +159,12 @@ Set `LANGFUSE_BASE_URL` to your instance URL:
 3. The hook reads only **new** lines from the transcript (using a file offset saved in state)
 4. New messages are grouped into user-assistant **turns**
 5. Each turn is emitted as a Langfuse **trace** with:
-   - A **generation** observation for the model response
-   - A **tool** span for each tool call (with input/output)
+   - A **system prompt** span (if present)
+   - A **generation** observation (with model, token usage, stop reason)
+   - Ordered content spans preserving the full assistant flow:
+     - **Thinking** spans for internal reasoning blocks
+     - **Text** spans for assistant text between tool calls
+     - **Tool** spans for each tool call (with input/output)
 6. All traces share the same `session_id` for grouping
 
 ## Compatibility

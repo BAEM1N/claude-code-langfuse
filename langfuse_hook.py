@@ -6,6 +6,15 @@ Automatically traces Claude Code conversations to Langfuse.
 Runs as a Claude Code "Stop" hook, parsing the JSONL transcript
 and sending per-turn traces with tool-call details.
 
+Captured data:
+  - System prompts
+  - User messages
+  - Assistant text (all interleaved blocks, including thinking)
+  - Tool calls with inputs and outputs
+  - Token usage (input, output, cache)
+  - Stop reason
+  - Session grouping
+
 Usage:
   Configure as a Stop hook in ~/.claude/settings.json
   See README.md for full setup instructions.
@@ -16,7 +25,7 @@ import os
 import sys
 import time
 import hashlib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -203,12 +212,12 @@ def get_content(msg: Dict[str, Any]) -> Any:
 
 def get_role(msg: Dict[str, Any]) -> Optional[str]:
     t = msg.get("type")
-    if t in ("user", "assistant"):
+    if t in ("user", "assistant", "system"):
         return t
     m = msg.get("message")
     if isinstance(m, dict):
         r = m.get("role")
-        if r in ("user", "assistant"):
+        if r in ("user", "assistant", "system"):
             return r
     return None
 
@@ -226,14 +235,6 @@ def iter_tool_results(content: Any) -> List[Dict[str, Any]]:
     if isinstance(content, list):
         for x in content:
             if isinstance(x, dict) and x.get("type") == "tool_result":
-                out.append(x)
-    return out
-
-def iter_tool_uses(content: Any) -> List[Dict[str, Any]]:
-    out: List[Dict[str, Any]] = []
-    if isinstance(content, list):
-        for x in content:
-            if isinstance(x, dict) and x.get("type") == "tool_use":
                 out.append(x)
     return out
 
@@ -272,6 +273,55 @@ def get_message_id(msg: Dict[str, Any]) -> Optional[str]:
         if isinstance(mid, str) and mid:
             return mid
     return None
+
+def get_usage(msg: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    m = msg.get("message")
+    if isinstance(m, dict):
+        u = m.get("usage")
+        if isinstance(u, dict):
+            return u
+    return None
+
+def get_stop_reason(msg: Dict[str, Any]) -> Optional[str]:
+    m = msg.get("message")
+    if isinstance(m, dict):
+        return m.get("stop_reason")
+    return None
+
+def aggregate_usage(assistant_msgs: List[Dict[str, Any]]) -> Optional[Dict[str, int]]:
+    total_input = 0
+    total_output = 0
+    cache_creation = 0
+    cache_read = 0
+    found = False
+    for msg in assistant_msgs:
+        usage = get_usage(msg)
+        if usage:
+            found = True
+            total_input += usage.get("input_tokens", 0)
+            total_output += usage.get("output_tokens", 0)
+            cache_creation += usage.get("cache_creation_input_tokens", 0)
+            cache_read += usage.get("cache_read_input_tokens", 0)
+    if not found:
+        return None
+    result: Dict[str, int] = {
+        "input": total_input,
+        "output": total_output,
+    }
+    if cache_creation:
+        result["input_cache_creation"] = cache_creation
+    if cache_read:
+        result["input_cache_read"] = cache_read
+    result["total"] = total_input + total_output
+    return result
+
+def extract_all_text(assistant_msgs: List[Dict[str, Any]]) -> str:
+    parts: List[str] = []
+    for msg in assistant_msgs:
+        t = extract_text(get_content(msg))
+        if t:
+            parts.append(t)
+    return "\n".join(parts)
 
 # ----------------- Incremental reader -----------------
 @dataclass
@@ -334,6 +384,7 @@ class Turn:
     user_msg: Dict[str, Any]
     assistant_msgs: List[Dict[str, Any]]
     tool_results_by_id: Dict[str, Any]
+    system_msgs: List[Dict[str, Any]] = field(default_factory=list)
 
 def build_turns(messages: List[Dict[str, Any]]) -> List[Turn]:
     turns: List[Turn] = []
@@ -341,18 +392,28 @@ def build_turns(messages: List[Dict[str, Any]]) -> List[Turn]:
     assistant_order: List[str] = []
     assistant_latest: Dict[str, Dict[str, Any]] = {}
     tool_results_by_id: Dict[str, Any] = {}
+    pending_system: List[Dict[str, Any]] = []
+    system_for_turn: List[Dict[str, Any]] = []
 
     def flush_turn():
-        nonlocal current_user, assistant_order, assistant_latest, tool_results_by_id, turns
+        nonlocal current_user, assistant_order, assistant_latest, tool_results_by_id, turns, system_for_turn
         if current_user is None:
             return
         if not assistant_latest:
             return
         assistants = [assistant_latest[mid] for mid in assistant_order if mid in assistant_latest]
-        turns.append(Turn(user_msg=current_user, assistant_msgs=assistants, tool_results_by_id=dict(tool_results_by_id)))
+        turns.append(Turn(
+            user_msg=current_user,
+            assistant_msgs=assistants,
+            tool_results_by_id=dict(tool_results_by_id),
+            system_msgs=list(system_for_turn),
+        ))
 
     for msg in messages:
         role = get_role(msg)
+        if role == "system":
+            pending_system.append(msg)
+            continue
         if is_tool_result(msg):
             for tr in iter_tool_results(get_content(msg)):
                 tid = tr.get("tool_use_id")
@@ -365,6 +426,8 @@ def build_turns(messages: List[Dict[str, Any]]) -> List[Turn]:
             assistant_order = []
             assistant_latest = {}
             tool_results_by_id = {}
+            system_for_turn = list(pending_system)
+            pending_system = []
             continue
         if role == "assistant":
             if current_user is None:
@@ -378,62 +441,184 @@ def build_turns(messages: List[Dict[str, Any]]) -> List[Turn]:
     flush_turn()
     return turns
 
-# ----------------- Langfuse emit -----------------
-def _tool_calls_from_assistants(assistant_msgs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    calls: List[Dict[str, Any]] = []
-    for am in assistant_msgs:
-        for tu in iter_tool_uses(get_content(am)):
-            tid = tu.get("id") or ""
-            calls.append({
-                "id": str(tid),
-                "name": tu.get("name") or "unknown",
-                "input": tu.get("input") if isinstance(tu.get("input"), (dict, list, str, int, float, bool)) else {},
-            })
-    return calls
+# ----------------- Content sequence builder -----------------
+def build_content_sequence(
+    assistant_msgs: List[Dict[str, Any]],
+    tool_results_by_id: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    """Build ordered sequence of all content blocks (text, thinking, tool_use)."""
+    sequence: List[Dict[str, Any]] = []
+    for msg in assistant_msgs:
+        content = get_content(msg)
+        if isinstance(content, str):
+            if content.strip():
+                sequence.append({"type": "text", "text": content})
+            continue
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if not isinstance(block, dict):
+                if isinstance(block, str) and block.strip():
+                    sequence.append({"type": "text", "text": block})
+                continue
+            btype = block.get("type")
+            if btype == "text":
+                text = block.get("text", "")
+                if text.strip():
+                    sequence.append({"type": "text", "text": text})
+            elif btype == "thinking":
+                thinking = block.get("thinking", "")
+                if thinking.strip():
+                    sequence.append({"type": "thinking", "text": thinking})
+            elif btype == "tool_use":
+                tid = str(block.get("id", ""))
+                entry: Dict[str, Any] = {
+                    "type": "tool_use",
+                    "id": tid,
+                    "name": block.get("name", "unknown"),
+                    "input": block.get("input") if isinstance(block.get("input"), (dict, list, str, int, float, bool)) else {},
+                }
+                if tid and tid in tool_results_by_id:
+                    out_raw = tool_results_by_id[tid]
+                    out_str = out_raw if isinstance(out_raw, str) else json.dumps(out_raw, ensure_ascii=False)
+                    out_trunc, out_meta = truncate_text(out_str)
+                    entry["output"] = out_trunc
+                    entry["output_meta"] = out_meta
+                else:
+                    entry["output"] = None
+                    entry["output_meta"] = None
+                sequence.append(entry)
+    return sequence
 
-def emit_turn(langfuse: Langfuse, session_id: str, turn_num: int, turn: Turn, transcript_path: Path, ctx: Optional[SessionContext] = None) -> None:
+# ----------------- Langfuse emit -----------------
+def emit_turn(
+    langfuse: Langfuse,
+    session_id: str,
+    turn_num: int,
+    turn: Turn,
+    transcript_path: Path,
+    ctx: Optional[SessionContext] = None,
+) -> None:
+    # User text
     user_text_raw = extract_text(get_content(turn.user_msg))
     user_text, user_text_meta = truncate_text(user_text_raw)
 
-    last_assistant = turn.assistant_msgs[-1]
-    assistant_text_raw = extract_text(get_content(last_assistant))
+    # All assistant text (concatenated from all messages)
+    assistant_text_raw = extract_all_text(turn.assistant_msgs)
     assistant_text, assistant_text_meta = truncate_text(assistant_text_raw)
 
-    model = get_model(turn.assistant_msgs[0])
-    tool_calls = _tool_calls_from_assistants(turn.assistant_msgs)
+    # System prompt
+    system_text = ""
+    if turn.system_msgs:
+        system_parts: List[str] = []
+        for sm in turn.system_msgs:
+            st = extract_text(get_content(sm))
+            if st:
+                system_parts.append(st)
+        system_text = "\n---\n".join(system_parts)
+    system_text_trunc, system_text_meta = truncate_text(system_text) if system_text else ("", {"truncated": False, "orig_len": 0})
 
-    for c in tool_calls:
-        if c["id"] and c["id"] in turn.tool_results_by_id:
-            out_raw = turn.tool_results_by_id[c["id"]]
-            out_str = out_raw if isinstance(out_raw, str) else json.dumps(out_raw, ensure_ascii=False)
-            out_trunc, out_meta = truncate_text(out_str)
-            c["output"] = out_trunc
-            c["output_meta"] = out_meta
-        else:
-            c["output"] = None
+    # Content sequence (ordered: text, thinking, tool_use blocks)
+    sequence = build_content_sequence(turn.assistant_msgs, turn.tool_results_by_id)
+
+    # Model, usage, stop_reason
+    model = get_model(turn.assistant_msgs[0])
+    usage = aggregate_usage(turn.assistant_msgs)
+    stop_reason = get_stop_reason(turn.assistant_msgs[-1])
 
     user_id = os.environ.get("CC_LANGFUSE_USER_ID") or os.environ.get("LANGFUSE_USER_ID") or "claude-user"
 
-    trace_meta = {
+    # Count block types
+    n_text = sum(1 for s in sequence if s["type"] == "text")
+    n_thinking = sum(1 for s in sequence if s["type"] == "thinking")
+    n_tools = sum(1 for s in sequence if s["type"] == "tool_use")
+
+    trace_meta: Dict[str, Any] = {
         "source": "claude-code",
         "session_id": session_id,
         "turn_number": turn_num,
         "transcript_path": str(transcript_path),
         "cwd": ctx.cwd if ctx else None,
         "permission_mode": ctx.permission_mode if ctx else None,
+        "stop_reason": stop_reason,
+        "has_system_prompt": bool(system_text),
+        "content_blocks": len(sequence),
+        "text_blocks": n_text,
+        "thinking_blocks": n_thinking,
+        "tool_blocks": n_tools,
         "user_text": user_text_meta,
     }
+    if usage:
+        trace_meta["usage"] = usage
 
     if _HAS_PROPAGATE:
-        _emit_modern(langfuse, session_id, user_id, turn_num, user_text,
-                     assistant_text, assistant_text_meta, model, tool_calls, trace_meta)
+        _emit_modern(
+            langfuse, session_id, user_id, turn_num,
+            user_text, assistant_text, assistant_text_meta,
+            model, usage, stop_reason,
+            system_text_trunc, system_text_meta,
+            sequence, trace_meta,
+        )
     else:
-        _emit_legacy(langfuse, session_id, user_id, turn_num, user_text,
-                     assistant_text, assistant_text_meta, model, tool_calls, trace_meta)
+        _emit_legacy(
+            langfuse, session_id, user_id, turn_num,
+            user_text, assistant_text, assistant_text_meta,
+            model, usage, stop_reason,
+            system_text_trunc, system_text_meta,
+            sequence, trace_meta,
+        )
 
 
-def _emit_modern(langfuse, session_id, user_id, turn_num, user_text,
-                 assistant_text, assistant_text_meta, model, tool_calls, trace_meta):
+def _emit_sequence_items_modern(langfuse, sequence: List[Dict[str, Any]]) -> None:
+    """Emit interleaved content blocks as nested spans (modern SDK)."""
+    text_idx = 0
+    thinking_idx = 0
+    for item in sequence:
+        if item["type"] == "thinking":
+            thinking_idx += 1
+            text_trunc, text_meta = truncate_text(item["text"])
+            with langfuse.start_as_current_span(
+                name=f"Thinking [{thinking_idx}]",
+                metadata={"type": "thinking", "text_meta": text_meta},
+            ) as span:
+                span.update(output=text_trunc)
+
+        elif item["type"] == "text":
+            text_idx += 1
+            text_trunc, text_meta = truncate_text(item["text"])
+            with langfuse.start_as_current_span(
+                name=f"Text [{text_idx}]",
+                metadata={"type": "text", "text_meta": text_meta},
+            ) as span:
+                span.update(output=text_trunc)
+
+        elif item["type"] == "tool_use":
+            in_obj = item["input"]
+            in_meta = None
+            if isinstance(in_obj, str):
+                in_obj, in_meta = truncate_text(in_obj)
+
+            with langfuse.start_as_current_observation(
+                name=f"Tool: {item['name']}",
+                as_type="tool",
+                input=in_obj,
+                metadata={
+                    "tool_name": item["name"],
+                    "tool_id": item["id"],
+                    "input_meta": in_meta,
+                    "output_meta": item.get("output_meta"),
+                },
+            ) as tool_obs:
+                tool_obs.update(output=item.get("output"))
+
+
+def _emit_modern(
+    langfuse, session_id, user_id, turn_num,
+    user_text, assistant_text, assistant_text_meta,
+    model, usage, stop_reason,
+    system_text, system_text_meta,
+    sequence, trace_meta,
+):
     """langfuse >= 3.12: propagate_attributes + nested spans."""
     with propagate_attributes(
         session_id=session_id,
@@ -446,43 +631,48 @@ def _emit_modern(langfuse, session_id, user_id, turn_num, user_text,
             input={"role": "user", "content": user_text},
             metadata=trace_meta,
         ) as trace_span:
-            with langfuse.start_as_current_observation(
-                name="Claude Response",
-                as_type="generation",
-                model=model,
-                input={"role": "user", "content": user_text},
-                output={"role": "assistant", "content": assistant_text},
-                metadata={
-                    "assistant_text": assistant_text_meta,
-                    "tool_count": len(tool_calls),
-                },
-            ):
+            # System prompt span
+            if system_text:
+                with langfuse.start_as_current_span(
+                    name="System Prompt",
+                    input={"role": "system"},
+                    metadata={"system_text": system_text_meta},
+                ) as sys_span:
+                    sys_span.update(output={"role": "system", "content": system_text})
+
+            # Generation observation with usage
+            gen_meta: Dict[str, Any] = {
+                "assistant_text": assistant_text_meta,
+                "stop_reason": stop_reason,
+                "content_blocks": len(sequence),
+            }
+            gen_kwargs: Dict[str, Any] = {
+                "name": "Claude Response",
+                "as_type": "generation",
+                "model": model,
+                "input": {"role": "user", "content": user_text},
+                "output": {"role": "assistant", "content": assistant_text},
+                "metadata": gen_meta,
+            }
+            if usage:
+                gen_kwargs["usage"] = usage
+
+            with langfuse.start_as_current_observation(**gen_kwargs):
                 pass
 
-            for call in tool_calls:
-                in_obj = call["input"]
-                in_meta = None
-                if isinstance(in_obj, str):
-                    in_obj, in_meta = truncate_text(in_obj)
-
-                with langfuse.start_as_current_observation(
-                    name=f"Tool: {call['name']}",
-                    as_type="tool",
-                    input=in_obj,
-                    metadata={
-                        "tool_name": call["name"],
-                        "tool_id": call["id"],
-                        "input_meta": in_meta,
-                        "output_meta": call.get("output_meta"),
-                    },
-                ) as tool_obs:
-                    tool_obs.update(output=call.get("output"))
+            # Interleaved content sequence (text, thinking, tool spans in order)
+            _emit_sequence_items_modern(langfuse, sequence)
 
             trace_span.update(output={"role": "assistant", "content": assistant_text})
 
 
-def _emit_legacy(langfuse, session_id, user_id, turn_num, user_text,
-                 assistant_text, assistant_text_meta, model, tool_calls, trace_meta):
+def _emit_legacy(
+    langfuse, session_id, user_id, turn_num,
+    user_text, assistant_text, assistant_text_meta,
+    model, usage, stop_reason,
+    system_text, system_text_meta,
+    sequence, trace_meta,
+):
     """langfuse < 3.12: flat trace + generation (no propagate_attributes)."""
     trace = langfuse.trace(
         name=f"Claude Code - Turn {turn_num}",
@@ -494,34 +684,69 @@ def _emit_legacy(langfuse, session_id, user_id, turn_num, user_text,
         tags=["claude-code"],
     )
 
-    trace.generation(
-        name="Claude Response",
-        model=model,
-        input={"role": "user", "content": user_text},
-        output={"role": "assistant", "content": assistant_text},
-        metadata={
-            "assistant_text": assistant_text_meta,
-            "tool_count": len(tool_calls),
-        },
-    )
-
-    for call in tool_calls:
-        in_obj = call["input"]
-        in_meta = None
-        if isinstance(in_obj, str):
-            in_obj, in_meta = truncate_text(in_obj)
-
+    # System prompt span
+    if system_text:
         trace.span(
-            name=f"Tool: {call['name']}",
-            input=in_obj,
-            output=call.get("output"),
-            metadata={
-                "tool_name": call["name"],
-                "tool_id": call["id"],
-                "input_meta": in_meta,
-                "output_meta": call.get("output_meta"),
-            },
+            name="System Prompt",
+            input={"role": "system"},
+            output={"role": "system", "content": system_text},
+            metadata={"system_text": system_text_meta},
         )
+
+    # Generation with usage
+    gen_kwargs: Dict[str, Any] = {
+        "name": "Claude Response",
+        "model": model,
+        "input": {"role": "user", "content": user_text},
+        "output": {"role": "assistant", "content": assistant_text},
+        "metadata": {
+            "assistant_text": assistant_text_meta,
+            "stop_reason": stop_reason,
+            "content_blocks": len(sequence),
+        },
+    }
+    if usage:
+        gen_kwargs["usage"] = usage
+
+    trace.generation(**gen_kwargs)
+
+    # Interleaved content sequence
+    text_idx = 0
+    thinking_idx = 0
+    for item in sequence:
+        if item["type"] == "thinking":
+            thinking_idx += 1
+            text_trunc, text_meta = truncate_text(item["text"])
+            trace.span(
+                name=f"Thinking [{thinking_idx}]",
+                output=text_trunc,
+                metadata={"type": "thinking", "text_meta": text_meta},
+            )
+        elif item["type"] == "text":
+            text_idx += 1
+            text_trunc, text_meta = truncate_text(item["text"])
+            trace.span(
+                name=f"Text [{text_idx}]",
+                output=text_trunc,
+                metadata={"type": "text", "text_meta": text_meta},
+            )
+        elif item["type"] == "tool_use":
+            in_obj = item["input"]
+            in_meta = None
+            if isinstance(in_obj, str):
+                in_obj, in_meta = truncate_text(in_obj)
+
+            trace.span(
+                name=f"Tool: {item['name']}",
+                input=in_obj,
+                output=item.get("output"),
+                metadata={
+                    "tool_name": item["name"],
+                    "tool_id": item["id"],
+                    "input_meta": in_meta,
+                    "output_meta": item.get("output_meta"),
+                },
+            )
 
 # ----------------- Main -----------------
 def main() -> int:
