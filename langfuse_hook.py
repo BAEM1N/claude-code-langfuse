@@ -612,6 +612,7 @@ def _emit_sequence_items_modern(
     thinking_idx = 0
     for i, item in enumerate(sequence):
         t = base_time + step * i
+        time.sleep(0.002)  # ensure distinct creation timestamps for ordering
         if item["type"] == "thinking":
             thinking_idx += 1
             text_trunc, text_meta = truncate_text(item["text"])
@@ -677,6 +678,7 @@ def _emit_modern(
             # System prompt span
             t_cursor = t0 + step
             if system_text:
+                time.sleep(0.002)
                 with langfuse.start_as_current_span(
                     name="System Prompt",
                     input={"role": "system"},
@@ -691,6 +693,7 @@ def _emit_modern(
                 "stop_reason": stop_reason,
                 "content_blocks": len(sequence),
             }
+            time.sleep(0.002)
             with langfuse.start_as_current_observation(
                 name="Claude Response",
                 as_type="generation",
