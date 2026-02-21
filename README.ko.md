@@ -19,6 +19,12 @@
 - **크로스 플랫폼** -- macOS, Linux, Windows 모두 지원
 - **SDK 호환** -- langfuse `>= 3.12` (중첩 스팬)과 이전 버전(플랫 트레이스) 모두 지원
 
+## 사전 요구 사항
+
+- **Claude Code** -- 설치 및 실행 가능 상태 ([설치 가이드](https://docs.anthropic.com/en/docs/claude-code))
+- **Python 3.8+** -- `pip` 사용 가능 (`python3 -m pip --version`으로 확인)
+- **Langfuse 계정** -- [cloud.langfuse.com](https://cloud.langfuse.com) (무료 플랜 가능) 또는 셀프 호스팅 인스턴스
+
 ## 빠른 시작
 
 ```bash

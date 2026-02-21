@@ -19,6 +19,12 @@ Automatic [Langfuse](https://langfuse.com) tracing for [Claude Code](https://doc
 - **Cross-platform** -- works on macOS, Linux, and Windows
 - **Dual SDK support** -- works with both langfuse `>= 3.12` (nested spans) and older versions (flat traces)
 
+## Prerequisites
+
+- **Claude Code** -- installed and working ([install guide](https://docs.anthropic.com/en/docs/claude-code))
+- **Python 3.8+** -- with `pip` available (`python3 -m pip --version` to verify)
+- **Langfuse account** -- [cloud.langfuse.com](https://cloud.langfuse.com) (free tier available) or a self-hosted instance
+
 ## Quick Start
 
 ```bash
