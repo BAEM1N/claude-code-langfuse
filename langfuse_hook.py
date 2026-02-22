@@ -22,6 +22,7 @@ Usage:
 
 import json
 import os
+import socket
 import sys
 import time
 import hashlib
@@ -496,6 +497,7 @@ def emit_turn(
     turn: Turn,
     transcript_path: Path,
     ctx: Optional[SessionContext] = None,
+    hostname: str = "",
 ) -> None:
     # User text
     user_text_raw = extract_text(get_content(turn.user_msg))
@@ -512,6 +514,7 @@ def emit_turn(
             "turn_number": turn_num,
             "transcript_path": str(transcript_path),
             "cwd": ctx.cwd if ctx else None,
+            "hostname": hostname,
             "incomplete": True,
             "user_text": user_text_meta,
         }
@@ -520,7 +523,7 @@ def emit_turn(
                 session_id=session_id,
                 user_id=user_id,
                 trace_name=f"Claude Code - Turn {turn_num} (incomplete)",
-                tags=["claude-code", "incomplete"],
+                tags=["claude-code", "incomplete", hostname],
             ):
                 with langfuse.start_as_current_span(
                     name=f"Claude Code - Turn {turn_num} (incomplete)",
@@ -538,7 +541,7 @@ def emit_turn(
                     name=f"Claude Code - Turn {turn_num} (incomplete)",
                     session_id=session_id,
                     user_id=user_id,
-                    tags=["claude-code", "incomplete"],
+                    tags=["claude-code", "incomplete", hostname],
                 )
                 span.update(output={"status": "incomplete", "reason": "no assistant response"})
         return
@@ -577,6 +580,7 @@ def emit_turn(
         "turn_number": turn_num,
         "transcript_path": str(transcript_path),
         "cwd": ctx.cwd if ctx else None,
+        "hostname": hostname,
         "permission_mode": ctx.permission_mode if ctx else None,
         "stop_reason": stop_reason,
         "has_system_prompt": bool(system_text),
@@ -595,7 +599,7 @@ def emit_turn(
             user_text, assistant_text, assistant_text_meta,
             model, usage, stop_reason,
             system_text_trunc, system_text_meta,
-            sequence, trace_meta,
+            sequence, trace_meta, hostname,
         )
     else:
         _emit_legacy(
@@ -603,7 +607,7 @@ def emit_turn(
             user_text, assistant_text, assistant_text_meta,
             model, usage, stop_reason,
             system_text_trunc, system_text_meta,
-            sequence, trace_meta,
+            sequence, trace_meta, hostname,
         )
 
 
@@ -659,14 +663,14 @@ def _emit_modern(
     user_text, assistant_text, assistant_text_meta,
     model, usage, stop_reason,
     system_text, system_text_meta,
-    sequence, trace_meta,
+    sequence, trace_meta, hostname="",
 ):
     """langfuse >= 3.12: propagate_attributes + nested spans."""
     with propagate_attributes(
         session_id=session_id,
         user_id=user_id,
         trace_name=f"Claude Code - Turn {turn_num}",
-        tags=["claude-code"],
+        tags=["claude-code", hostname],
     ):
         step = timedelta(milliseconds=1)
         t0 = datetime.now(timezone.utc)
@@ -721,7 +725,7 @@ def _emit_legacy(
     user_text, assistant_text, assistant_text_meta,
     model, usage, stop_reason,
     system_text, system_text_meta,
-    sequence, trace_meta,
+    sequence, trace_meta, hostname="",
 ):
     """langfuse >= 3.x without propagate_attributes (e.g. 3.7+, Python < 3.10)."""
     step = timedelta(milliseconds=1)
@@ -739,7 +743,7 @@ def _emit_legacy(
             name=f"Claude Code - Turn {turn_num}",
             session_id=session_id,
             user_id=user_id,
-            tags=["claude-code"],
+            tags=["claude-code", hostname],
             input={"role": "user", "content": user_text},
             output={"role": "assistant", "content": assistant_text},
             metadata=trace_meta,
@@ -840,6 +844,7 @@ def main() -> int:
     public_key = os.environ.get("CC_LANGFUSE_PUBLIC_KEY") or os.environ.get("LANGFUSE_PUBLIC_KEY")
     secret_key = os.environ.get("CC_LANGFUSE_SECRET_KEY") or os.environ.get("LANGFUSE_SECRET_KEY")
     host = os.environ.get("CC_LANGFUSE_BASE_URL") or os.environ.get("LANGFUSE_BASE_URL") or "https://cloud.langfuse.com"
+    hostname = os.environ.get("CC_LANGFUSE_HOSTNAME") or socket.gethostname()
 
     if not public_key or not secret_key:
         return 0
@@ -886,7 +891,7 @@ def main() -> int:
                 emitted += 1
                 turn_num = ss.turn_count + emitted
                 try:
-                    emit_turn(langfuse, session_id, turn_num, t, transcript_path, ctx)
+                    emit_turn(langfuse, session_id, turn_num, t, transcript_path, ctx, hostname=hostname)
                 except Exception as e:
                     debug(f"emit_turn failed: {e}")
 
