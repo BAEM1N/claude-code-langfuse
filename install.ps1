@@ -1,5 +1,5 @@
 # ─────────────────────────────────────────────
-# claude-code-langfuse installer (Windows)
+# langfuse-claude-code installer (Windows)
 # ─────────────────────────────────────────────
 #Requires -Version 5.1
 
@@ -19,7 +19,7 @@ function Write-Err   ($msg) { Write-Host "[ERROR] $msg" -ForegroundColor Red }
 
 Write-Host ""
 Write-Host "============================================"
-Write-Host "   claude-code-langfuse installer"
+Write-Host "   langfuse-claude-code installer"
 Write-Host "============================================"
 Write-Host ""
 

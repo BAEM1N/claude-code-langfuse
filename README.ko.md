@@ -1,4 +1,4 @@
-# claude-code-langfuse
+# langfuse-claude-code
 
 [English](README.md) | [한국어](README.ko.md)
 
@@ -31,16 +31,16 @@
 
 ```bash
 # 클론 후 설치 스크립트 실행
-git clone https://github.com/BAEM1N/claude-code-langfuse.git
-cd claude-code-langfuse
+git clone https://github.com/BAEM1N/langfuse-claude-code.git
+cd langfuse-claude-code
 bash install.sh
 ```
 
 Windows (PowerShell):
 
 ```powershell
-git clone https://github.com/BAEM1N/claude-code-langfuse.git
-cd claude-code-langfuse
+git clone https://github.com/BAEM1N/langfuse-claude-code.git
+cd langfuse-claude-code
 .\install.ps1
 ```
 

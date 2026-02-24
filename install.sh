@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # ─────────────────────────────────────────────
-# claude-code-langfuse installer (macOS / Linux)
+# langfuse-claude-code installer (macOS / Linux)
 # ─────────────────────────────────────────────
 
 HOOK_NAME="langfuse_hook.py"
@@ -26,7 +26,7 @@ step()  { echo -e "${BLUE}[STEP]${NC} $1"; }
 
 echo ""
 echo "╔══════════════════════════════════════════╗"
-echo "║  claude-code-langfuse installer          ║"
+echo "║  langfuse-claude-code installer          ║"
 echo "╚══════════════════════════════════════════╝"
 echo ""
 

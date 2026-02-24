@@ -1,4 +1,4 @@
-# claude-code-langfuse
+# langfuse-claude-code
 
 [English](README.md) | [한국어](README.ko.md)
 
@@ -31,16 +31,16 @@ Automatic [Langfuse](https://langfuse.com) tracing for [Claude Code](https://doc
 
 ```bash
 # Clone and run the installer
-git clone https://github.com/BAEM1N/claude-code-langfuse.git
-cd claude-code-langfuse
+git clone https://github.com/BAEM1N/langfuse-claude-code.git
+cd langfuse-claude-code
 bash install.sh
 ```
 
 On Windows (PowerShell):
 
 ```powershell
-git clone https://github.com/BAEM1N/claude-code-langfuse.git
-cd claude-code-langfuse
+git clone https://github.com/BAEM1N/langfuse-claude-code.git
+cd langfuse-claude-code
 .\install.ps1
 ```
 
