@@ -31,6 +31,36 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+# --- Load .env file (fail-open, no dependencies) ---
+def _load_dotenv() -> None:
+    """Load user-level .env file from ~/.claude/.env into os.environ.
+
+    Configuration hierarchy (highest priority first):
+      1. os.environ (system env vars, settings.json env section)
+      2. ~/.claude/.env (user-level credentials)
+
+    Project-level config should use settings.json env section.
+    Only sets variables that are NOT already set (env/json take priority).
+    """
+    env_path = Path.home() / ".claude" / ".env"
+    try:
+        if not env_path.exists():
+            return
+        with open(env_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, _, value = line.partition("=")
+                key = key.strip()
+                value = value.strip().strip("'\"")
+                if key and key not in os.environ:
+                    os.environ[key] = value
+    except Exception:
+        pass
+
+_load_dotenv()
+
 # --- Langfuse import (fail-open) ---
 try:
     from langfuse import Langfuse

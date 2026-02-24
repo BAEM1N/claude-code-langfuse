@@ -49,18 +49,31 @@ cp langfuse_hook.py ~/.claude/hooks/langfuse_hook.py
 chmod +x ~/.claude/hooks/langfuse_hook.py
 ```
 
-### Step 4: Configure settings.json
+### Step 4: Write Credentials to .env
+
+Write the credentials to `~/.claude/.env` (user-level, NOT in settings.json):
+
+```bash
+cat > ~/.claude/.env <<EOF
+# Langfuse credentials for langfuse-claude-code
+# Environment variables and settings.json env take priority over .env values.
+
+TRACE_TO_LANGFUSE=true
+LANGFUSE_PUBLIC_KEY=<from interview>
+LANGFUSE_SECRET_KEY=<from interview>
+LANGFUSE_BASE_URL=<from interview>
+LANGFUSE_USER_ID=<from interview>
+EOF
+```
+
+### Step 5: Configure settings.json
 
 Read the existing `~/.claude/settings.json` first, then merge (do NOT overwrite existing settings):
 
-**Add to `env`** (preserve existing env vars):
+**Add to `env`** (only the enable flag; credentials are in .env):
 ```json
 {
-  "TRACE_TO_LANGFUSE": "true",
-  "LANGFUSE_PUBLIC_KEY": "<from interview>",
-  "LANGFUSE_SECRET_KEY": "<from interview>",
-  "LANGFUSE_BASE_URL": "<from interview>",
-  "LANGFUSE_USER_ID": "<from interview>"
+  "TRACE_TO_LANGFUSE": "true"
 }
 ```
 
@@ -74,11 +87,14 @@ Read the existing `~/.claude/settings.json` first, then merge (do NOT overwrite 
 }
 ```
 
-### Step 5: Verify
+### Step 6: Verify
 
 ```bash
 # Check hook file exists
 ls -la ~/.claude/hooks/langfuse_hook.py
+
+# Check .env file exists
+ls -la ~/.claude/.env
 
 # Check langfuse import works
 python3 -c "import langfuse; print('OK')"
@@ -87,14 +103,24 @@ python3 -c "import langfuse; print('OK')"
 echo '{}' | python3 ~/.claude/hooks/langfuse_hook.py
 ```
 
-### Step 6: Inform User
+### Step 7: Inform User
 
 Tell the user:
 - Restart Claude Code to activate the hooks
 - Dashboard: the LANGFUSE_BASE_URL they provided
+- Credentials: `~/.claude/.env`
 - Logs: `~/.claude/state/langfuse_hook.log`
-- Debug mode: set `CC_LANGFUSE_DEBUG` to `"true"` in env
-- Disable: set `TRACE_TO_LANGFUSE` to `"false"` in env
+- Debug mode: set `CC_LANGFUSE_DEBUG` to `"true"` in .env or settings.json env
+- Disable: set `TRACE_TO_LANGFUSE` to `"false"` in settings.json env
+
+## Configuration Hierarchy
+
+Priority (highest first):
+1. **Environment variables** (system-level)
+2. **settings.json `env` section** (project-level config)
+3. **~/.claude/.env** (user-level credentials)
+
+Credentials go in `.env`, hook registration and feature flags go in `settings.json`.
 
 ## File Paths
 
@@ -102,14 +128,15 @@ Tell the user:
 |------|------|---------|
 | Hook script (source) | `./langfuse_hook.py` | Main hook implementation |
 | Hook script (installed) | `~/.claude/hooks/langfuse_hook.py` | Active hook |
-| Settings | `~/.claude/settings.json` | Hook registration + env vars |
+| Credentials | `~/.claude/.env` | Langfuse API keys (user-level) |
+| Settings | `~/.claude/settings.json` | Hook registration + feature flags |
 | State | `~/.claude/state/langfuse_state.json` | Incremental processing offsets |
 | Tool buffer | `~/.claude/state/langfuse_tool_buffer.jsonl` | PreToolUse/PostToolUse event buffer |
 | Log | `~/.claude/state/langfuse_hook.log` | Hook execution log |
 
 ## Troubleshooting
 
-- **No traces**: Check `TRACE_TO_LANGFUSE=true` and API keys are correct
+- **No traces**: Check `TRACE_TO_LANGFUSE=true` and API keys in `~/.claude/.env`
 - **Hook not firing**: Verify hooks are in settings.json under all 4 event keys
 - **Import error**: Run `python3 -m pip install langfuse`
 - **Duplicate traces**: Delete `~/.claude/state/langfuse_state.json` for fresh start

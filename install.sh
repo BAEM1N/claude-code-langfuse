@@ -95,22 +95,35 @@ if [[ -z "$LF_PUBLIC_KEY" || -z "$LF_SECRET_KEY" ]]; then
     exit 1
 fi
 
-# ── 6. Merge into settings.json ─────────────
-step "Updating $SETTINGS_FILE..."
+# ── 6. Write credentials to .env ──────────────
+step "Writing credentials to $CLAUDE_DIR/.env..."
+ENV_FILE="$CLAUDE_DIR/.env"
 mkdir -p "$CLAUDE_DIR"
+
+cat > "$ENV_FILE" <<ENVEOF
+# Langfuse credentials for langfuse-claude-code
+# Environment variables and settings.json env take priority over .env values.
+
+TRACE_TO_LANGFUSE=true
+LANGFUSE_PUBLIC_KEY=${LF_PUBLIC_KEY}
+LANGFUSE_SECRET_KEY=${LF_SECRET_KEY}
+LANGFUSE_BASE_URL=${LF_BASE_URL}
+LANGFUSE_USER_ID=${LF_USER_ID}
+ENVEOF
+
+info "Credentials written to $ENV_FILE"
+
+# ── 7. Merge hooks into settings.json ─────────
+step "Updating $SETTINGS_FILE (hooks only, credentials in .env)..."
 
 HOOK_CMD="$PYTHON ~/.claude/hooks/langfuse_hook.py"
 
-# Smart merge: preserves existing hooks/env, only adds/updates langfuse entries
-$PYTHON - "$SETTINGS_FILE" "$HOOK_CMD" "$LF_PUBLIC_KEY" "$LF_SECRET_KEY" "$LF_BASE_URL" "$LF_USER_ID" <<'PYEOF'
+# Smart merge: preserves existing hooks/env, only adds hooks + TRACE_TO_LANGFUSE
+$PYTHON - "$SETTINGS_FILE" "$HOOK_CMD" <<'PYEOF'
 import json, sys, os
 
 settings_path = sys.argv[1]
 hook_command  = sys.argv[2]
-public_key    = sys.argv[3]
-secret_key    = sys.argv[4]
-base_url      = sys.argv[5]
-user_id       = sys.argv[6]
 
 # Load existing settings
 if os.path.exists(settings_path):
@@ -119,14 +132,10 @@ if os.path.exists(settings_path):
 else:
     settings = {}
 
-# ── Merge env (preserve existing keys) ──
+# ── Merge env (only TRACE_TO_LANGFUSE; credentials stay in .env) ──
 if "env" not in settings or not isinstance(settings["env"], dict):
     settings["env"] = {}
-settings["env"]["TRACE_TO_LANGFUSE"]  = "true"
-settings["env"]["LANGFUSE_PUBLIC_KEY"] = public_key
-settings["env"]["LANGFUSE_SECRET_KEY"] = secret_key
-settings["env"]["LANGFUSE_BASE_URL"]   = base_url
-settings["env"]["LANGFUSE_USER_ID"]    = user_id
+settings["env"]["TRACE_TO_LANGFUSE"] = "true"
 
 # ── Merge hooks (preserve existing hooks) ──
 if "hooks" not in settings or not isinstance(settings["hooks"], dict):
@@ -174,7 +183,7 @@ for event, n, replaced in results:
     print(f"  {event}: {n} hook(s) ({status} langfuse)")
 PYEOF
 
-# ── 7. Verify ────────────────────────────────
+# ── 8. Verify ────────────────────────────────
 step "Verifying installation..."
 if $PYTHON -c "import langfuse" 2>/dev/null; then
     info "langfuse SDK: OK"
