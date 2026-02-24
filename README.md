@@ -6,7 +6,9 @@ Automatic [Langfuse](https://langfuse.com) tracing for [Claude Code](https://doc
 
 ## Features
 
+- **Full event coverage** -- all 4 Claude Code hook events are captured (Stop, Notification, PreToolUse, PostToolUse)
 - **Per-turn tracing** -- each user prompt + assistant response becomes a Langfuse trace
+- **Real-time tool events** -- PreToolUse and PostToolUse hooks capture tool calls as they happen with precise timing
 - **System prompt capture** -- system messages are recorded as dedicated spans
 - **Full assistant content** -- all text blocks between tool calls are preserved in order (no content lost)
 - **Thinking blocks** -- Claude's internal reasoning (`thinking`) is captured as separate spans
@@ -16,7 +18,6 @@ Automatic [Langfuse](https://langfuse.com) tracing for [Claude Code](https://doc
 - **Session grouping** -- traces are grouped by Claude Code session ID
 - **Incremental processing** -- only new transcript entries are sent (no duplicates)
 - **Incomplete turn capture** -- if the session exits before a response, user messages are still recorded
-- **Dual hook events** -- registered on both `Stop` and `Notification` for maximum coverage
 - **Fail-open design** -- if anything goes wrong the hook exits silently; Claude Code is never blocked
 - **Cross-platform** -- works on macOS, Linux, and Windows
 - **Dual SDK support** -- works with both langfuse `>= 3.12` (nested spans) and older versions (flat traces)
@@ -90,6 +91,26 @@ Add (or merge) the following into your settings file:
       }
     ],
     "Notification": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/langfuse_hook.py"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/langfuse_hook.py"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
       {
         "hooks": [
           {
@@ -179,17 +200,19 @@ Set `LANGFUSE_BASE_URL` to your instance URL:
 **Flow:**
 
 1. Claude Code writes conversation data to a JSONL transcript file
-2. On every **Stop** event (after each model response) and **Notification** event, the hook is invoked
-3. The hook reads only **new** lines from the transcript (using a file offset saved in state)
-4. New messages are grouped into user-assistant **turns**
-5. Each turn is emitted as a Langfuse **trace** with:
+2. On every **Stop** event (after each model response) and **Notification** event, the hook reads the transcript
+3. On **PreToolUse** and **PostToolUse** events, the hook emits real-time tool spans independently
+4. The hook reads only **new** lines from the transcript (using a file offset saved in state)
+5. New messages are grouped into user-assistant **turns**
+6. Each turn is emitted as a Langfuse **trace** with:
    - A **system prompt** span (if present)
    - A **generation** observation (with model, token usage, stop reason)
    - Ordered content spans preserving the full assistant flow:
      - **Thinking** spans for internal reasoning blocks
      - **Text** spans for assistant text between tool calls
      - **Tool** spans for each tool call (with input/output)
-6. All traces share the same `session_id` for grouping
+   - Real-time **Before Tool** / **After Tool** spans (from PreToolUse/PostToolUse)
+7. All traces share the same `session_id` for grouping
 
 ## Compatibility
 
@@ -211,7 +234,7 @@ Set `LANGFUSE_BASE_URL` to your instance URL:
 
 ### Hook not firing
 
-1. Confirm the hook is in `~/.claude/settings.json` under `hooks.Stop` and `hooks.Notification`
+1. Confirm the hooks are in `~/.claude/settings.json` under `hooks.Stop`, `hooks.Notification`, `hooks.PreToolUse`, and `hooks.PostToolUse`
 2. Verify the Python path in the command is correct (`python3` vs `python`)
 3. Test manually: `echo '{}' | python3 ~/.claude/hooks/langfuse_hook.py`
 

@@ -6,7 +6,9 @@
 
 ## 주요 기능
 
+- **전체 이벤트 커버리지** -- Claude Code의 4개 hook 이벤트 전체 캡처 (Stop, Notification, PreToolUse, PostToolUse)
 - **턴 단위 트레이싱** -- 사용자 프롬프트 + 어시스턴트 응답이 하나의 Langfuse 트레이스로 기록
+- **실시간 도구 이벤트** -- PreToolUse/PostToolUse 훅이 도구 호출을 실시간으로 정확한 타이밍과 함께 캡처
 - **시스템 프롬프트 캡처** -- 시스템 메시지가 별도 스팬으로 기록
 - **전체 어시스턴트 콘텐츠** -- 도구 호출 사이의 모든 텍스트 블록이 순서대로 보존 (누락 없음)
 - **Thinking 블록** -- Claude의 내부 추론(`thinking`)이 별도 스팬으로 캡처
@@ -16,7 +18,6 @@
 - **세션 그룹핑** -- Claude Code 세션 ID 기준으로 트레이스 그룹화
 - **증분 처리** -- 새로운 트랜스크립트 항목만 전송 (중복 없음)
 - **미완성 턴 캡처** -- 응답 전에 세션이 종료되어도 사용자 메시지가 기록됨
-- **이중 훅 이벤트** -- `Stop`과 `Notification` 양쪽에 등록하여 최대 커버리지 확보
 - **Fail-open 설계** -- 오류 발생 시 훅이 조용히 종료; Claude Code 작업에 영향 없음
 - **크로스 플랫폼** -- macOS, Linux, Windows 모두 지원
 - **SDK 호환** -- langfuse `>= 3.12` (중첩 스팬)과 이전 버전(플랫 트레이스) 모두 지원
@@ -80,24 +81,16 @@ chmod +x ~/.claude/hooks/langfuse_hook.py
 {
   "hooks": {
     "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 ~/.claude/hooks/langfuse_hook.py"
-          }
-        ]
-      }
+      {"hooks": [{"type": "command", "command": "python3 ~/.claude/hooks/langfuse_hook.py"}]}
     ],
     "Notification": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 ~/.claude/hooks/langfuse_hook.py"
-          }
-        ]
-      }
+      {"hooks": [{"type": "command", "command": "python3 ~/.claude/hooks/langfuse_hook.py"}]}
+    ],
+    "PreToolUse": [
+      {"hooks": [{"type": "command", "command": "python3 ~/.claude/hooks/langfuse_hook.py"}]}
+    ],
+    "PostToolUse": [
+      {"hooks": [{"type": "command", "command": "python3 ~/.claude/hooks/langfuse_hook.py"}]}
     ]
   },
   "env": {
@@ -179,17 +172,19 @@ chmod +x ~/.claude/hooks/langfuse_hook.py
 **흐름:**
 
 1. Claude Code가 대화 데이터를 JSONL 트랜스크립트 파일에 기록
-2. **Stop** 이벤트(모델 응답 후)와 **Notification** 이벤트마다 훅 실행
-3. 훅이 트랜스크립트에서 **새로운** 줄만 읽음 (상태 파일에 저장된 오프셋 사용)
-4. 새 메시지를 사용자-어시스턴트 **턴**으로 그룹화
-5. 각 턴을 Langfuse **트레이스**로 전송:
+2. **Stop** 이벤트(모델 응답 후)와 **Notification** 이벤트마다 훅이 트랜스크립트 읽기
+3. **PreToolUse**와 **PostToolUse** 이벤트마다 실시간 도구 스팬을 독립적으로 전송
+4. 훅이 트랜스크립트에서 **새로운** 줄만 읽음 (상태 파일에 저장된 오프셋 사용)
+5. 새 메시지를 사용자-어시스턴트 **턴**으로 그룹화
+6. 각 턴을 Langfuse **트레이스**로 전송:
    - **시스템 프롬프트** 스팬 (존재 시)
    - **generation** 관찰 (모델명, 토큰 사용량, stop reason 포함)
    - 어시스턴트 전체 흐름을 순서대로 보존하는 콘텐츠 스팬:
      - **Thinking** 스팬: 내부 추론 블록
      - **Text** 스팬: 도구 호출 사이의 어시스턴트 텍스트
      - **Tool** 스팬: 각 도구 호출 (입출력 포함)
-6. 동일 `session_id`로 모든 트레이스 그룹화
+   - 실시간 **Before Tool** / **After Tool** 스팬 (PreToolUse/PostToolUse)
+7. 동일 `session_id`로 모든 트레이스 그룹화
 
 ## 호환성
 
@@ -211,7 +206,7 @@ chmod +x ~/.claude/hooks/langfuse_hook.py
 
 ### 훅이 실행되지 않는 경우
 
-1. `~/.claude/settings.json`의 `hooks.Stop`과 `hooks.Notification`에 훅이 있는지 확인
+1. `~/.claude/settings.json`의 `hooks.Stop`, `hooks.Notification`, `hooks.PreToolUse`, `hooks.PostToolUse`에 훅이 있는지 확인
 2. 커맨드의 Python 경로가 올바른지 확인 (`python3` vs `python`)
 3. 수동 테스트: `echo '{}' | python3 ~/.claude/hooks/langfuse_hook.py`
 
@@ -229,7 +224,7 @@ chmod +x ~/.claude/hooks/langfuse_hook.py
 
 ## 제거
 
-1. `~/.claude/settings.json`에서 훅 항목 제거 (`Stop` 훅, `Notification` 훅, `env` 키 삭제)
+1. `~/.claude/settings.json`에서 훅 항목 제거 (`Stop`, `Notification`, `PreToolUse`, `PostToolUse` 훅 및 `env` 키 삭제)
 2. 훅 스크립트 삭제: `rm ~/.claude/hooks/langfuse_hook.py`
 3. 선택적으로 상태 파일 제거: `rm ~/.claude/state/langfuse_state.json`
 

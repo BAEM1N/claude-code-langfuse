@@ -3,20 +3,20 @@
 Claude Code -> Langfuse hook
 
 Automatically traces Claude Code conversations to Langfuse.
-Runs as a Claude Code "Stop" hook, parsing the JSONL transcript
-and sending per-turn traces with tool-call details.
+Hooks into all available Claude Code events for comprehensive observability.
 
 Captured data:
   - System prompts
   - User messages
   - Assistant text (all interleaved blocks, including thinking)
-  - Tool calls with inputs and outputs
+  - Tool calls with inputs and outputs (from transcript + real-time hooks)
   - Token usage (input, output, cache)
   - Stop reason
   - Session grouping
+  - Real-time tool events (PreToolUse / PostToolUse)
 
 Usage:
-  Configure as a Stop hook in ~/.claude/settings.json
+  Configure as hooks in ~/.claude/settings.json
   See README.md for full setup instructions.
 """
 
@@ -53,6 +53,7 @@ LOCK_FILE = STATE_DIR / "langfuse_state.lock"
 
 DEBUG = os.environ.get("CC_LANGFUSE_DEBUG", "").lower() == "true"
 MAX_CHARS = int(os.environ.get("CC_LANGFUSE_MAX_CHARS", "20000"))
+BUFFER_FILE = STATE_DIR / "langfuse_tool_buffer.jsonl"
 
 # ----------------- Logging -----------------
 def _log(level: str, message: str) -> None:
@@ -833,6 +834,147 @@ def _emit_sequence_items_legacy(
             ) as tool_obs:
                 tool_obs.update(start_time=t, output=item.get("output"))
 
+# ----------------- Tool event buffer (PreToolUse / PostToolUse) -----------------
+def append_tool_event(session_id: str, event_type: str, data: Dict[str, Any]) -> None:
+    """Buffer a PreToolUse or PostToolUse event."""
+    try:
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        entry = {
+            "event": event_type,
+            "session_id": session_id,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "data": data,
+        }
+        with open(BUFFER_FILE, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception as e:
+        debug(f"append_tool_event failed: {e}")
+
+def read_tool_events(session_id: str) -> List[Dict[str, Any]]:
+    """Read buffered tool events for a session (non-destructive)."""
+    events: List[Dict[str, Any]] = []
+    try:
+        if not BUFFER_FILE.exists():
+            return events
+        with open(BUFFER_FILE, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    ev = json.loads(line)
+                    if ev.get("session_id") == session_id:
+                        events.append(ev)
+                except Exception:
+                    continue
+    except Exception as e:
+        debug(f"read_tool_events failed: {e}")
+    return events
+
+def cleanup_tool_buffer(session_id: str) -> None:
+    """Remove consumed events for a session from the buffer."""
+    try:
+        if not BUFFER_FILE.exists():
+            return
+        remaining: List[str] = []
+        with open(BUFFER_FILE, "r", encoding="utf-8") as f:
+            for line in f:
+                line_s = line.strip()
+                if not line_s:
+                    continue
+                try:
+                    ev = json.loads(line_s)
+                    if ev.get("session_id") != session_id:
+                        remaining.append(line_s)
+                except Exception:
+                    remaining.append(line_s)
+        with open(BUFFER_FILE, "w", encoding="utf-8") as f:
+            for r in remaining:
+                f.write(r + "\n")
+    except Exception as e:
+        debug(f"cleanup_tool_buffer failed: {e}")
+
+# ----------------- Event type detection -----------------
+def detect_hook_event(payload: Dict[str, Any]) -> str:
+    """Detect hook event type from payload structure.
+
+    Claude Code payloads differ by event:
+      - PreToolUse: has tool_name, tool_input, no tool_output
+      - PostToolUse: has tool_name, tool_input, tool_output
+      - Stop/Notification: has transcriptPath but no tool_name
+    """
+    if "tool_name" in payload:
+        if "tool_output" in payload:
+            return "PostToolUse"
+        return "PreToolUse"
+    return "Stop"  # covers Stop and Notification
+
+# ----------------- Tool event emit -----------------
+def emit_tool_event(
+    langfuse: Langfuse,
+    session_id: str,
+    event_type: str,
+    payload: Dict[str, Any],
+    hostname: str = "",
+) -> None:
+    """Emit a PreToolUse or PostToolUse event as a Langfuse span."""
+    user_id = os.environ.get("CC_LANGFUSE_USER_ID") or os.environ.get("LANGFUSE_USER_ID") or "claude-user"
+    tool_name = payload.get("tool_name", "unknown")
+
+    tool_input = payload.get("tool_input")
+    in_str = tool_input if isinstance(tool_input, (dict, list)) else str(tool_input or "")
+    in_meta = None
+    if isinstance(in_str, str):
+        in_str, in_meta = truncate_text(in_str)
+
+    meta: Dict[str, Any] = {
+        "source": "claude-code",
+        "session_id": session_id,
+        "event": event_type,
+        "tool_name": tool_name,
+        "hostname": hostname,
+        "input_meta": in_meta,
+    }
+
+    if event_type == "PostToolUse":
+        tool_output = payload.get("tool_output")
+        out_str = tool_output if isinstance(tool_output, str) else json.dumps(tool_output, ensure_ascii=False, default=str) if tool_output is not None else ""
+        out_str, out_meta = truncate_text(out_str)
+        meta["output_meta"] = out_meta
+    else:
+        out_str = None
+
+    span_name = f"{'Before' if event_type == 'PreToolUse' else 'After'} Tool: {tool_name}"
+
+    if _HAS_PROPAGATE:
+        with propagate_attributes(
+            session_id=session_id,
+            user_id=user_id,
+            trace_name=span_name,
+            tags=["claude-code", event_type.lower(), hostname],
+        ):
+            with langfuse.start_as_current_span(
+                name=span_name,
+                input=in_str,
+                metadata=meta,
+            ) as span:
+                if out_str is not None:
+                    span.update(output=out_str)
+    else:
+        with langfuse.start_as_current_span(
+            name=span_name,
+            input=in_str,
+            metadata=meta,
+        ) as span:
+            langfuse.update_current_trace(
+                name=span_name,
+                session_id=session_id,
+                user_id=user_id,
+                tags=["claude-code", event_type.lower(), hostname],
+            )
+            if out_str is not None:
+                span.update(output=out_str)
+
 # ----------------- Main -----------------
 def main() -> int:
     start = time.time()
@@ -850,13 +992,53 @@ def main() -> int:
         return 0
 
     payload = read_hook_payload()
+    event_type = detect_hook_event(payload)
+    debug(f"Event type: {event_type}")
+
     ctx = extract_session_context(payload)
 
-    if not ctx.session_id or not ctx.transcript_path:
-        debug("Missing session_id or transcript_path from hook payload; exiting.")
+    if not ctx.session_id:
+        debug("Missing session_id from hook payload; exiting.")
         return 0
 
     session_id = ctx.session_id
+
+    # --- PreToolUse / PostToolUse: buffer + emit independently ---
+    if event_type in ("PreToolUse", "PostToolUse"):
+        # Buffer for potential enrichment during Stop
+        append_tool_event(session_id, event_type, {
+            "tool_name": payload.get("tool_name"),
+            "tool_input": payload.get("tool_input"),
+            "tool_output": payload.get("tool_output"),
+        })
+
+        # Also emit as independent Langfuse span
+        try:
+            langfuse = Langfuse(public_key=public_key, secret_key=secret_key, host=host)
+        except Exception:
+            return 0
+        try:
+            emit_tool_event(langfuse, session_id, event_type, payload, hostname=hostname)
+            try:
+                langfuse.flush()
+            except Exception:
+                pass
+            dur = time.time() - start
+            debug(f"Emitted {event_type} for {payload.get('tool_name')} in {dur:.2f}s")
+        except Exception as e:
+            debug(f"{event_type} emit failed: {e}")
+        finally:
+            try:
+                langfuse.shutdown()
+            except Exception:
+                pass
+        return 0
+
+    # --- Stop / Notification: existing transcript-based processing ---
+    if not ctx.transcript_path:
+        debug("Missing transcript_path from hook payload; exiting.")
+        return 0
+
     transcript_path = ctx.transcript_path
 
     if not transcript_path.exists():
@@ -898,6 +1080,9 @@ def main() -> int:
             ss.turn_count += emitted
             write_session_state(state, key, ss)
             save_state(state)
+
+        # Cleanup consumed tool events for this session
+        cleanup_tool_buffer(session_id)
 
         try:
             langfuse.flush()

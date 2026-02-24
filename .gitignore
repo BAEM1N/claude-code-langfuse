@@ -14,3 +14,4 @@ Thumbs.db
 langfuse_state.json
 langfuse_state.json.tmp
 langfuse_state.lock
+langfuse_tool_buffer.jsonl

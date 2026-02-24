@@ -156,8 +156,12 @@ def upsert_hook(settings, event_name, langfuse_entry):
     settings["hooks"][event_name] = hook_list
     return len(hook_list), replaced
 
-n_stop, stop_replaced = upsert_hook(settings, "Stop", langfuse_entry)
-n_notif, notif_replaced = upsert_hook(settings, "Notification", langfuse_entry)
+ALL_EVENTS = ["Stop", "Notification", "PreToolUse", "PostToolUse"]
+
+results = []
+for event in ALL_EVENTS:
+    n, replaced = upsert_hook(settings, event, langfuse_entry)
+    results.append((event, n, replaced))
 
 # Write
 with open(settings_path, "w", encoding="utf-8") as f:
@@ -165,8 +169,9 @@ with open(settings_path, "w", encoding="utf-8") as f:
     f.write("\n")
 
 print(f"  Settings written to {settings_path}")
-print(f"  Stop hooks: {n_stop} total ({'updated' if stop_replaced else 'added'} langfuse hook)")
-print(f"  Notification hooks: {n_notif} total ({'updated' if notif_replaced else 'added'} langfuse hook)")
+for event, n, replaced in results:
+    status = "updated" if replaced else "added"
+    print(f"  {event}: {n} hook(s) ({status} langfuse)")
 PYEOF
 
 # ── 7. Verify ────────────────────────────────
@@ -189,7 +194,7 @@ echo "╔═══════════════════════�
 echo "║  Installation complete!                  ║"
 echo "╚══════════════════════════════════════════╝"
 echo ""
-info "Claude Code will now send traces to Langfuse on every Stop event."
+info "Claude Code will now send traces to Langfuse on all hook events (Stop, Notification, PreToolUse, PostToolUse)."
 info "Start (or restart) Claude Code to activate the hook."
 echo ""
 echo "  Dashboard : ${LF_BASE_URL}"
