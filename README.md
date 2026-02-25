@@ -8,6 +8,8 @@ Automatic [Langfuse](https://langfuse.com) tracing for [Claude Code](https://doc
 
 - ✅ Hook pipeline verified on real Claude Code runs
 - ✅ Turn traces, tool spans, and token usage confirmed in Langfuse
+- ✅ Repository cleanup completed (no unnecessary tracked files found)
+- ✅ `v0.0.1` release/tag refreshed with final docs sync
 - ✅ LCC (`langfuse-claude-code`) aligned with companion repos:
   - `langfuse-oh-my-codex`
   - `langfuse-gemini-cli`
