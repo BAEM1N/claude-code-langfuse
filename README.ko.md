@@ -4,6 +4,16 @@
 
 [Claude Code](https://docs.anthropic.com/en/docs/claude-code)를 위한 자동 [Langfuse](https://langfuse.com) 트레이싱. 대화 턴, 도구 호출, 모델 응답이 Langfuse 대시보드에 구조화된 트레이스로 자동 기록됩니다. 코드 변경 없이 사용할 수 있습니다.
 
+## 상태 (2026년 2월 25일)
+
+- ✅ 실제 Claude Code 실행 기준 훅 파이프라인 검증 완료
+- ✅ 턴 트레이스, 도구 스팬, 토큰 사용량이 Langfuse에 정상 기록됨
+- ✅ 다음 연동 저장소와 정렬 완료:
+  - `langfuse-oh-my-codex`
+  - `langfuse-gemini-cli`
+  - `langfuse-opencode`
+- 진행 문서: [English](./PROGRESS.md) | [한국어](./PROGRESS.ko.md)
+
 ## 주요 기능
 
 - **전체 이벤트 커버리지** -- Claude Code의 4개 hook 이벤트 전체 캡처 (Stop, Notification, PreToolUse, PostToolUse)

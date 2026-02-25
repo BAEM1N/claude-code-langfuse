@@ -321,19 +321,36 @@ def get_stop_reason(msg: Dict[str, Any]) -> Optional[str]:
     return None
 
 def aggregate_usage(assistant_msgs: List[Dict[str, Any]]) -> Optional[Dict[str, int]]:
+    def to_int(v: Any) -> int:
+        if isinstance(v, bool):
+            return 0
+        if isinstance(v, int):
+            return v
+        if isinstance(v, float):
+            return int(v)
+        if isinstance(v, str):
+            try:
+                return int(float(v))
+            except Exception:
+                return 0
+        return 0
+
     total_input = 0
     total_output = 0
     cache_creation = 0
     cache_read = 0
+    reasoning = 0
     found = False
     for msg in assistant_msgs:
         usage = get_usage(msg)
         if usage:
             found = True
-            total_input += usage.get("input_tokens", 0)
-            total_output += usage.get("output_tokens", 0)
-            cache_creation += usage.get("cache_creation_input_tokens", 0)
-            cache_read += usage.get("cache_read_input_tokens", 0)
+            total_input += to_int(usage.get("input_tokens"))
+            total_output += to_int(usage.get("output_tokens"))
+            cache_creation += to_int(usage.get("cache_creation_input_tokens"))
+            cache_read += to_int(usage.get("cache_read_input_tokens"))
+            # Future-proofing: include reasoning token fields when present
+            reasoning += to_int(usage.get("reasoning_tokens")) or to_int(usage.get("reasoning_output_tokens"))
     if not found:
         return None
     result: Dict[str, int] = {
@@ -344,6 +361,8 @@ def aggregate_usage(assistant_msgs: List[Dict[str, Any]]) -> Optional[Dict[str, 
         result["input_cache_creation"] = cache_creation
     if cache_read:
         result["input_cache_read"] = cache_read
+    if reasoning:
+        result["reasoning"] = reasoning
     result["total"] = total_input + total_output
     return result
 
@@ -529,6 +548,8 @@ def emit_turn(
     transcript_path: Path,
     ctx: Optional[SessionContext] = None,
     hostname: str = "",
+    hook_event_type: str = "Stop",
+    hook_tool_events: Optional[List[Dict[str, Any]]] = None,
 ) -> None:
     # User text
     user_text_raw = extract_text(get_content(turn.user_msg))
@@ -607,11 +628,14 @@ def emit_turn(
 
     trace_meta = {
         "source": "claude-code",
+        "product": "claude-code",
+        "reconstruction": "hook-transcript-plus-tool-buffer",
         "session_id": session_id,
         "turn_number": turn_num,
         "transcript_path": str(transcript_path),
         "cwd": ctx.cwd if ctx else None,
         "hostname": hostname,
+        "hook_event": hook_event_type,
         "permission_mode": ctx.permission_mode if ctx else None,
         "stop_reason": stop_reason,
         "has_system_prompt": bool(system_text),
@@ -620,6 +644,7 @@ def emit_turn(
         "thinking_blocks": n_thinking,
         "tool_blocks": n_tools,
         "user_text": user_text_meta,
+        "hook_tool_events": len(hook_tool_events or []),
     }
     if usage:
         trace_meta["usage"] = usage
@@ -630,7 +655,7 @@ def emit_turn(
             user_text, assistant_text, assistant_text_meta,
             model, usage, stop_reason,
             system_text_trunc, system_text_meta,
-            sequence, trace_meta, hostname,
+            sequence, trace_meta, hostname, hook_tool_events or [],
         )
     else:
         _emit_legacy(
@@ -638,7 +663,7 @@ def emit_turn(
             user_text, assistant_text, assistant_text_meta,
             model, usage, stop_reason,
             system_text_trunc, system_text_meta,
-            sequence, trace_meta, hostname,
+            sequence, trace_meta, hostname, hook_tool_events or [],
         )
 
 
@@ -689,12 +714,46 @@ def _emit_sequence_items_modern(
                 tool_obs.update(start_time=t, output=item.get("output"))
 
 
+def _emit_hook_tool_events_modern(
+    langfuse,
+    hook_tool_events: List[Dict[str, Any]],
+    base_time: datetime,
+    step: timedelta,
+) -> None:
+    for i, ev in enumerate(hook_tool_events):
+        t = base_time + step * i
+        name = str(ev.get("tool_name") or "unknown")
+        event = str(ev.get("event") or "tool")
+        in_raw = ev.get("tool_input")
+        out_raw = ev.get("tool_output")
+
+        in_text = in_raw if isinstance(in_raw, str) else json.dumps(in_raw, ensure_ascii=False, default=str) if in_raw is not None else ""
+        out_text = out_raw if isinstance(out_raw, str) else json.dumps(out_raw, ensure_ascii=False, default=str) if out_raw is not None else ""
+        in_text, in_meta = truncate_text(in_text)
+        out_text, out_meta = truncate_text(out_text)
+
+        with langfuse.start_as_current_observation(
+            name=f"Hook Tool [{i + 1}]: {name}",
+            as_type="tool",
+            input=in_text,
+            metadata={
+                "source": "claude-code-hook",
+                "event": event,
+                "tool_name": name,
+                "timestamp": ev.get("timestamp"),
+                "input_meta": in_meta,
+                "output_meta": out_meta,
+            },
+        ) as tool_obs:
+            tool_obs.update(start_time=t, output=out_text if out_text else None)
+
+
 def _emit_modern(
     langfuse, session_id, user_id, turn_num,
     user_text, assistant_text, assistant_text_meta,
     model, usage, stop_reason,
     system_text, system_text_meta,
-    sequence, trace_meta, hostname="",
+    sequence, trace_meta, hostname="", hook_tool_events=None,
 ):
     """langfuse >= 3.12: propagate_attributes + nested spans."""
     with propagate_attributes(
@@ -747,6 +806,11 @@ def _emit_modern(
 
             # Interleaved content sequence (text, thinking, tool spans in order)
             _emit_sequence_items_modern(langfuse, sequence, t_cursor, step)
+            t_cursor = t_cursor + step * len(sequence)
+
+            # Hook-level tool events (PreToolUse/PostToolUse) for deep reconstruction
+            if hook_tool_events:
+                _emit_hook_tool_events_modern(langfuse, hook_tool_events, t_cursor, step)
 
             trace_span.update(output={"role": "assistant", "content": assistant_text})
 
@@ -756,7 +820,7 @@ def _emit_legacy(
     user_text, assistant_text, assistant_text_meta,
     model, usage, stop_reason,
     system_text, system_text_meta,
-    sequence, trace_meta, hostname="",
+    sequence, trace_meta, hostname="", hook_tool_events=None,
 ):
     """langfuse >= 3.x without propagate_attributes (e.g. 3.7+, Python < 3.10)."""
     step = timedelta(milliseconds=1)
@@ -814,6 +878,10 @@ def _emit_legacy(
 
         # Interleaved content sequence
         _emit_sequence_items_legacy(langfuse, sequence, t_cursor, step)
+        t_cursor = t_cursor + step * len(sequence)
+
+        if hook_tool_events:
+            _emit_hook_tool_events_legacy(langfuse, hook_tool_events, t_cursor, step)
 
         trace_span.update(output={"role": "assistant", "content": assistant_text})
 
@@ -863,6 +931,40 @@ def _emit_sequence_items_legacy(
                 },
             ) as tool_obs:
                 tool_obs.update(start_time=t, output=item.get("output"))
+
+
+def _emit_hook_tool_events_legacy(
+    langfuse,
+    hook_tool_events: List[Dict[str, Any]],
+    base_time: datetime,
+    step: timedelta,
+) -> None:
+    for i, ev in enumerate(hook_tool_events):
+        t = base_time + step * i
+        name = str(ev.get("tool_name") or "unknown")
+        event = str(ev.get("event") or "tool")
+        in_raw = ev.get("tool_input")
+        out_raw = ev.get("tool_output")
+
+        in_text = in_raw if isinstance(in_raw, str) else json.dumps(in_raw, ensure_ascii=False, default=str) if in_raw is not None else ""
+        out_text = out_raw if isinstance(out_raw, str) else json.dumps(out_raw, ensure_ascii=False, default=str) if out_raw is not None else ""
+        in_text, in_meta = truncate_text(in_text)
+        out_text, out_meta = truncate_text(out_text)
+
+        with langfuse.start_as_current_observation(
+            name=f"Hook Tool [{i + 1}]: {name}",
+            as_type="tool",
+            input=in_text,
+            metadata={
+                "source": "claude-code-hook",
+                "event": event,
+                "tool_name": name,
+                "timestamp": ev.get("timestamp"),
+                "input_meta": in_meta,
+                "output_meta": out_meta,
+            },
+        ) as tool_obs:
+            tool_obs.update(start_time=t, output=out_text if out_text else None)
 
 # ----------------- Tool event buffer (PreToolUse / PostToolUse) -----------------
 def append_tool_event(session_id: str, event_type: str, data: Dict[str, Any]) -> None:
@@ -924,6 +1026,98 @@ def cleanup_tool_buffer(session_id: str) -> None:
     except Exception as e:
         debug(f"cleanup_tool_buffer failed: {e}")
 
+
+def estimate_turn_tool_call_count(turn: Turn) -> int:
+    count = 0
+    for msg in turn.assistant_msgs:
+        content = get_content(msg)
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "tool_use":
+                count += 1
+    return count
+
+
+def partition_tool_events_by_turn(turns: List[Turn], tool_events: List[Dict[str, Any]]) -> List[List[Dict[str, Any]]]:
+    """Best-effort allocation of buffered hook tool events to emitted turns.
+
+    PreToolUse/PostToolUse events are sequential in practice. We estimate event count
+    per turn from transcript tool_use blocks (roughly 2 events per tool call).
+    Any remainder is attached to the last turn so no event is dropped.
+    """
+    buckets: List[List[Dict[str, Any]]] = [[] for _ in turns]
+    if not turns or not tool_events:
+        return buckets
+
+    idx = 0
+    for i, turn in enumerate(turns):
+        n_tools = estimate_turn_tool_call_count(turn)
+        if n_tools <= 0:
+            continue
+        expected = n_tools * 2
+        chunk = tool_events[idx: idx + expected]
+        if not chunk:
+            break
+        buckets[i].extend(chunk)
+        idx += len(chunk)
+        if idx >= len(tool_events):
+            break
+
+    if idx < len(tool_events):
+        buckets[-1].extend(tool_events[idx:])
+    return buckets
+
+
+def emit_notification_event(
+    langfuse: Langfuse,
+    session_id: str,
+    payload: Dict[str, Any],
+    hostname: str = "",
+) -> None:
+    user_id = os.environ.get("CC_LANGFUSE_USER_ID") or os.environ.get("LANGFUSE_USER_ID") or "claude-user"
+    name = "Claude Code - Notification"
+    meta = {
+        "source": "claude-code",
+        "product": "claude-code",
+        "event": "Notification",
+        "session_id": session_id,
+        "hostname": hostname,
+        "notification_type": payload.get("notification_type"),
+    }
+    output = {
+        "message": payload.get("message"),
+        "details": payload.get("details"),
+    }
+
+    if _HAS_PROPAGATE:
+        with propagate_attributes(
+            session_id=session_id,
+            user_id=user_id,
+            trace_name=name,
+            tags=["claude-code", "notification", hostname],
+        ):
+            with langfuse.start_as_current_span(
+                name=name,
+                input={"event": "Notification"},
+                metadata=meta,
+            ) as span:
+                span.update(output=output)
+        return
+
+    with langfuse.start_as_current_span(
+        name=name,
+        input={"event": "Notification"},
+        metadata=meta,
+    ) as span:
+        langfuse.update_current_trace(
+            name=name,
+            session_id=session_id,
+            user_id=user_id,
+            tags=["claude-code", "notification", hostname],
+        )
+        span.update(output=output)
+
 # ----------------- Event type detection -----------------
 def detect_hook_event(payload: Dict[str, Any]) -> str:
     """Detect hook event type from payload structure.
@@ -933,11 +1127,19 @@ def detect_hook_event(payload: Dict[str, Any]) -> str:
       - PostToolUse: has tool_name, tool_input, tool_output
       - Stop/Notification: has transcriptPath but no tool_name
     """
+    declared = payload.get("hook_event_name") or payload.get("event")
+    if isinstance(declared, str):
+        d = declared.strip()
+        if d in ("Stop", "Notification", "PreToolUse", "PostToolUse"):
+            return d
+
     if "tool_name" in payload:
         if "tool_output" in payload:
             return "PostToolUse"
         return "PreToolUse"
-    return "Stop"  # covers Stop and Notification
+    if "notification_type" in payload or "details" in payload:
+        return "Notification"
+    return "Stop"
 
 # ----------------- Tool event emit -----------------
 def emit_tool_event(
@@ -1033,38 +1235,17 @@ def main() -> int:
 
     session_id = ctx.session_id
 
-    # --- PreToolUse / PostToolUse: buffer + emit independently ---
+    # --- PreToolUse / PostToolUse: buffer only (included in turn trace via transcript) ---
     if event_type in ("PreToolUse", "PostToolUse"):
-        # Buffer for potential enrichment during Stop
         append_tool_event(session_id, event_type, {
             "tool_name": payload.get("tool_name"),
             "tool_input": payload.get("tool_input"),
             "tool_output": payload.get("tool_output"),
         })
-
-        # Also emit as independent Langfuse span
-        try:
-            langfuse = Langfuse(public_key=public_key, secret_key=secret_key, host=host)
-        except Exception:
-            return 0
-        try:
-            emit_tool_event(langfuse, session_id, event_type, payload, hostname=hostname)
-            try:
-                langfuse.flush()
-            except Exception:
-                pass
-            dur = time.time() - start
-            debug(f"Emitted {event_type} for {payload.get('tool_name')} in {dur:.2f}s")
-        except Exception as e:
-            debug(f"{event_type} emit failed: {e}")
-        finally:
-            try:
-                langfuse.shutdown()
-            except Exception:
-                pass
+        debug(f"Buffered {event_type} for {payload.get('tool_name')}")
         return 0
 
-    # --- Stop / Notification: existing transcript-based processing ---
+    # --- Stop / Notification: transcript-based turn processing ---
     if not ctx.transcript_path:
         debug("Missing transcript_path from hook payload; exiting.")
         return 0
@@ -1098,18 +1279,38 @@ def main() -> int:
                 save_state(state)
                 return 0
 
+            # Best-effort map of PreToolUse/PostToolUse events into each emitted turn.
+            buffered_tool_events = read_tool_events(session_id)
+            tool_event_buckets = partition_tool_events_by_turn(turns, buffered_tool_events)
+
             emitted = 0
-            for t in turns:
+            for i, t in enumerate(turns):
                 emitted += 1
                 turn_num = ss.turn_count + emitted
                 try:
-                    emit_turn(langfuse, session_id, turn_num, t, transcript_path, ctx, hostname=hostname)
+                    emit_turn(
+                        langfuse,
+                        session_id,
+                        turn_num,
+                        t,
+                        transcript_path,
+                        ctx,
+                        hostname=hostname,
+                        hook_event_type=event_type,
+                        hook_tool_events=tool_event_buckets[i] if i < len(tool_event_buckets) else [],
+                    )
                 except Exception as e:
                     debug(f"emit_turn failed: {e}")
 
             ss.turn_count += emitted
             write_session_state(state, key, ss)
             save_state(state)
+
+        if event_type == "Notification":
+            try:
+                emit_notification_event(langfuse, session_id, payload, hostname=hostname)
+            except Exception as e:
+                debug(f"emit_notification_event failed: {e}")
 
         # Cleanup consumed tool events for this session
         cleanup_tool_buffer(session_id)

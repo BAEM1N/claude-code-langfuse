@@ -1,0 +1,12 @@
+# 진행 현황 (2026-02-25)
+
+## 완료
+- Claude Code 훅 파이프라인 안정화 완료.
+- Stop/Notification/PreToolUse/PostToolUse 흐름 검증 완료.
+
+## 검증
+- 훅 문법 검사 통과.
+- 로그 및 Langfuse 트레이스 생성 확인 완료.
+
+## 다음
+- 필요 시 대형 트랜스크립트 회귀 테스트 픽스처 추가.

@@ -4,6 +4,16 @@
 
 Automatic [Langfuse](https://langfuse.com) tracing for [Claude Code](https://docs.anthropic.com/en/docs/claude-code). Every conversation turn, tool call, and model response is captured as structured traces in your Langfuse dashboard -- zero code changes required.
 
+## Status (February 25, 2026)
+
+- ✅ Hook pipeline verified on real Claude Code runs
+- ✅ Turn traces, tool spans, and token usage confirmed in Langfuse
+- ✅ LCC (`langfuse-claude-code`) aligned with companion repos:
+  - `langfuse-oh-my-codex`
+  - `langfuse-gemini-cli`
+  - `langfuse-opencode`
+- Progress docs: [English](./PROGRESS.md) | [한국어](./PROGRESS.ko.md)
+
 ## Features
 
 - **Full event coverage** -- all 4 Claude Code hook events are captured (Stop, Notification, PreToolUse, PostToolUse)
