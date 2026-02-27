@@ -33,9 +33,9 @@ echo ""
 # ── 1. Check Python ──────────────────────────
 step "Checking Python installation..."
 PYTHON=""
-if command -v python3 &>/dev/null; then
+if command -v python3 &>/dev/null && python3 --version &>/dev/null 2>&1; then
     PYTHON="python3"
-elif command -v python &>/dev/null; then
+elif command -v python &>/dev/null && python --version &>/dev/null 2>&1; then
     PYTHON="python"
 else
     error "Python not found. Please install Python 3.8+ first."

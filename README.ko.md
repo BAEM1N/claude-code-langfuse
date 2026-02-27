@@ -37,7 +37,7 @@
 ## 사전 요구 사항
 
 - **Claude Code** -- 설치 및 실행 가능 상태 ([설치 가이드](https://docs.anthropic.com/en/docs/claude-code))
-- **Python 3.8+** -- `pip` 사용 가능 (`python3 -m pip --version`으로 확인)
+- **Python 3.8+** -- `pip` 사용 가능 (`python3 -m pip --version` 또는 `python -m pip --version`으로 확인)
 - **Langfuse 계정** -- [cloud.langfuse.com](https://cloud.langfuse.com) (무료 플랜 가능) 또는 셀프 호스팅 인스턴스
 
 ## 빠른 시작
@@ -220,7 +220,7 @@ chmod +x ~/.claude/hooks/langfuse_hook.py
 
 1. `~/.claude/settings.json`의 `hooks.Stop`, `hooks.Notification`, `hooks.PreToolUse`, `hooks.PostToolUse`에 훅이 있는지 확인
 2. 커맨드의 Python 경로가 올바른지 확인 (`python3` vs `python`)
-3. 수동 테스트: `echo '{}' | python3 ~/.claude/hooks/langfuse_hook.py`
+3. 수동 테스트: `echo '{}' | python3 ~/.claude/hooks/langfuse_hook.py` (Windows에서는 `python3` 대신 `python` 사용)
 
 ### 중복 트레이스
 

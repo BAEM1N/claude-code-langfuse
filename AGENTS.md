@@ -14,18 +14,18 @@ When a user asks to set up this project, follow these steps:
 
 ```bash
 # Python 3.8+
-python3 --version
+python3 --version   # or `python --version` on Windows
 
 # pip available
-python3 -m pip --version
+python3 -m pip --version   # or `python -m pip --version` on Windows
 
 # langfuse SDK
-python3 -c "import langfuse; print(langfuse.__version__)" 2>/dev/null || echo "Not installed"
+python3 -c "import langfuse; print(langfuse.__version__)" 2>/dev/null || python -c "import langfuse; print(langfuse.__version__)" 2>/dev/null || echo "Not installed"
 ```
 
 If langfuse is not installed:
 ```bash
-python3 -m pip install --upgrade langfuse
+python3 -m pip install --upgrade langfuse   # or `python -m pip install ...` on Windows
 ```
 
 ### Step 2: Interview User for Langfuse Credentials
@@ -97,10 +97,10 @@ ls -la ~/.claude/hooks/langfuse_hook.py
 ls -la ~/.claude/.env
 
 # Check langfuse import works
-python3 -c "import langfuse; print('OK')"
+python3 -c "import langfuse; print('OK')" || python -c "import langfuse; print('OK')"
 
 # Dry-run test (should exit silently)
-echo '{}' | python3 ~/.claude/hooks/langfuse_hook.py
+echo '{}' | python3 ~/.claude/hooks/langfuse_hook.py   # or `python` on Windows
 ```
 
 ### Step 7: Inform User
@@ -138,5 +138,5 @@ Credentials go in `.env`, hook registration and feature flags go in `settings.js
 
 - **No traces**: Check `TRACE_TO_LANGFUSE=true` and API keys in `~/.claude/.env`
 - **Hook not firing**: Verify hooks are in settings.json under all 4 event keys
-- **Import error**: Run `python3 -m pip install langfuse`
+- **Import error**: Run `python3 -m pip install langfuse` (or `python -m pip install langfuse` on Windows)
 - **Duplicate traces**: Delete `~/.claude/state/langfuse_state.json` for fresh start

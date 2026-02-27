@@ -27,10 +27,12 @@ Write-Host ""
 Write-Step "Checking Python installation..."
 $Python = $null
 if (Get-Command python -ErrorAction SilentlyContinue) {
-    $Python = "python"
-} elseif (Get-Command python3 -ErrorAction SilentlyContinue) {
-    $Python = "python3"
-} else {
+    try { & python --version 2>$null | Out-Null; $Python = "python" } catch {}
+}
+if (-not $Python -and (Get-Command python3 -ErrorAction SilentlyContinue)) {
+    try { & python3 --version 2>$null | Out-Null; $Python = "python3" } catch {}
+}
+if (-not $Python) {
     Write-Err "Python not found. Please install Python 3.8+ first."
     exit 1
 }

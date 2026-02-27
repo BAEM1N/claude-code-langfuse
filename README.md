@@ -37,7 +37,7 @@ Automatic [Langfuse](https://langfuse.com) tracing for [Claude Code](https://doc
 ## Prerequisites
 
 - **Claude Code** -- installed and working ([install guide](https://docs.anthropic.com/en/docs/claude-code))
-- **Python 3.8+** -- with `pip` available (`python3 -m pip --version` to verify)
+- **Python 3.8+** -- with `pip` available (`python3 -m pip --version` or `python -m pip --version` to verify)
 - **Langfuse account** -- [cloud.langfuse.com](https://cloud.langfuse.com) (free tier available) or a self-hosted instance
 
 ## Quick Start
@@ -248,7 +248,7 @@ Set `LANGFUSE_BASE_URL` to your instance URL:
 
 1. Confirm the hooks are in `~/.claude/settings.json` under `hooks.Stop`, `hooks.Notification`, `hooks.PreToolUse`, and `hooks.PostToolUse`
 2. Verify the Python path in the command is correct (`python3` vs `python`)
-3. Test manually: `echo '{}' | python3 ~/.claude/hooks/langfuse_hook.py`
+3. Test manually: `echo '{}' | python3 ~/.claude/hooks/langfuse_hook.py` (use `python` instead of `python3` on Windows)
 
 ### Duplicate traces
 
